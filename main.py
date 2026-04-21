@@ -94,7 +94,7 @@ def is_valid_pos(pos):
 
 # --- CARICAMENTO SCENA ---
 target = p.loadURDF("cube_small.urdf", basePosition=[1,0.75,0.1], useFixedBase=True, globalScaling=0.1)
-p.changeVisualShape(objectUniqueId=target, linkIndex=-1, rgbaColor=[1,0,0,1]) #red
+p.changeVisualShape(objectUniqueId=target, linkIndex=-1, rgbaColor=[1,0,0,1]) 
 #robo2 = p.loadURDF("franka_panda/panda.urdf", basePosition=roboPos, useFixedBase=True, globalScaling=1.0)
 script_dir = os.path.dirname(os.path.abspath(__file__))
 urdf_path = os.path.join(script_dir, "xarm_model/urdf/xarm_fixed.urdf")
@@ -107,14 +107,40 @@ REST_POSE = [0, 0.5, -0.5, 0.5, 0] #[0, -0.785, 0, -2.356, 0, 1.571, 0.785, 0.04
 arm_joints = [0, 1, 2, 3, 4] #[0, 1, 2, 3, 4, 5, 6]
 EE_LINK_INDEX = 5 #(panda:11, xarm:5)
 
+# Verifica i limiti di ogni giunto per configurare correttamente l'IK
+# for j in arm_joints:
+#     info = p.getJointInfo(robo, j)
+#     name = info[1].decode()
+#     lo = math.degrees(info[8])
+#     hi = math.degrees(info[9])
+#     print(f"  {name}: [{lo:.1f}°, {hi:.1f}°]")
+
+# Limiti per l'IK: estratti direttamente dal robot per evitare errori di configurazione
+lower_limits = []
+upper_limits = []
+joint_ranges = []
+
+for j in arm_joints:
+    info = p.getJointInfo(robo, j)
+    lower_limits.append(info[8])
+    upper_limits.append(info[9])
+    joint_ranges.append(info[9] - info[8])
+
+# Verifica che la rest pose sia entro i limiti di ogni giunto, altrimenti l'IK potrebbe fallire
+# for i, j in enumerate(arm_joints):
+#     info = p.getJointInfo(robo, j)
+#     lo, hi = info[8], info[9]
+#     r = REST_POSE[i]
+#     ok = lo <= r <= hi
+#     print(f"  j{i}: REST={math.degrees(r):.1f}° range=[{math.degrees(lo):.1f}°, {math.degrees(hi):.1f}°] {'OK' if ok else '*** FUORI RANGE ***'}")
+
 # --- CSV SETUP ---
 csv_path = os.path.join(script_dir, "dataset.csv")
 csv_file = open(csv_path, "w", newline="")
 csv_writer = csv.writer(csv_file)
 header_row = [
     "target_x", "target_y", "target_z",
-    "hand_quat_qx", "hand_quat_qy", "hand_quat_qz", "hand_quat_qw",
-    "orient_z", "orient_w"
+    "hand_quat_qx", "hand_quat_qy", "hand_quat_qz", "hand_quat_qw"
 ]
 for i in range(len(arm_joints)):
     header_row += [f"joint_{i}"]
@@ -149,20 +175,48 @@ debug_cylinder = p.createMultiBody(
 debug_tip_visual = p.createVisualShape(
     shapeType=p.GEOM_SPHERE,
     radius=0.015,
-    rgbaColor=[0.2, 0.85, 0.1, 0.6] 
+    rgbaColor=[0.6, 0.1, 0.6, 0.6] 
 )
 debug_tip = p.createMultiBody(
     baseMass=0,
     baseVisualShapeIndex=debug_tip_visual,
     basePosition=[0, 0, 0]
 )
+ear_offset = 0.015 # distanza laterale delle "orecchie" dal centro del cilindro
+
+debug_ear_left_visual = p.createVisualShape(
+    shapeType=p.GEOM_CYLINDER,
+    radius=0.006,
+    length=0.01,
+    rgbaColor=[1, 0.3, 0.0, 0.5],  # arancione
+    visualFramePosition=[0, 0, 0],
+    visualFrameOrientation=p.getQuaternionFromEuler([0, math.pi/2, 0])  # perpendicolare
+)
+debug_ear_left = p.createMultiBody(
+    baseMass=0,
+    baseVisualShapeIndex=debug_ear_left_visual,
+    basePosition=[0, 0, 0],
+    baseOrientation=[0, 0, 0, 1]
+)
+
+debug_ear_right_visual = p.createVisualShape(
+    shapeType=p.GEOM_CYLINDER,
+    radius=0.006,
+    length=0.01,
+    rgbaColor=[0.2, 0.85, 0.1, 0.5],  # verde
+    visualFramePosition=[0, 0, 0],
+    visualFrameOrientation=p.getQuaternionFromEuler([0, math.pi/2, 0])
+)
+debug_ear_right = p.createMultiBody(
+    baseMass=0,
+    baseVisualShapeIndex=debug_ear_right_visual,
+    basePosition=[0, 0, 0],
+    baseOrientation=[0, 0, 0, 1]
+)
 
 # --- Distance line debug ---
 debug_line_id = None
 debug_text_id = None
-
-
-
 
 # --- PREPARAZIONE CAMPIONAMENTO ---
 xSamples = make_samples(XSAMPLES, XRANGE/2)
@@ -238,6 +292,9 @@ try:
                     endEffectorLinkIndex=EE_LINK_INDEX,
                     targetPosition=desired_pos,
                     #non specifico targetOrientation così da ottenere la soluzione più naturale e usala come riferimento per i campionamenti di rotazione locali
+                    lowerLimits=lower_limits,
+                    upperLimits=upper_limits,
+                    jointRanges=joint_ranges,
                     restPoses=REST_POSE,
                     maxNumIterations=200,
                     residualThreshold=1e-5
@@ -271,9 +328,28 @@ try:
                             tip_pos = [desired_pos[i] + tip_offset_world[i] for i in range(3)]
                             p.resetBasePositionAndOrientation(debug_tip, tip_pos, [0,0,0,1])
 
+                            p.resetBasePositionAndOrientation(debug_cylinder, desired_pos, q_target)
+
+                            # Calcola posizione orecchie nel world frame
+                            R = quaternion_to_matrix(q_target)
+                            x_axis = R[:, 0]  # asse X locale del cilindro nel world
+
+                            # Le orecchie stanno all'inizio del cilindro 
+                            z_axis = R[:, 2]
+                            mid_cyl = np.array(desired_pos) #- z_axis * 0.01
+
+                            ear_left_pos  = mid_cyl + x_axis * ear_offset
+                            ear_right_pos = mid_cyl - x_axis * ear_offset
+
+                            p.resetBasePositionAndOrientation(debug_ear_left,  ear_left_pos.tolist(),  q_target)
+                            p.resetBasePositionAndOrientation(debug_ear_right, ear_right_pos.tolist(), q_target)
+
+                            # --- fine debug orientamento target ---
+
                             time.sleep(0.01)
 
                             p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 0)  # spegni renderer
+                            
                             # Reset alla rest pose PRIMA di calcolare l'IK
                             # così il seed è sempre consistente e l'IK non diverge
                             for i, joint_id in enumerate(arm_joints):
@@ -284,6 +360,9 @@ try:
                                 endEffectorLinkIndex=EE_LINK_INDEX,
                                 targetPosition=desired_pos,
                                 targetOrientation=q_target,
+                                lowerLimits=lower_limits,
+                                upperLimits=upper_limits,
+                                jointRanges=joint_ranges,
                                 restPoses=REST_POSE,
                                 maxNumIterations=200,
                                 residualThreshold=1e-5
@@ -319,14 +398,12 @@ try:
 
                             # Aggiorna linea (replaceItemUniqueId evita di accumulare debug line ad ogni iterazione)
                             if is_valid_pos(ee_pos) and is_valid_pos(target_position) and is_valid_pos(mid_pos):
-                                if debug_line_id is None:
-                                    debug_line_id = p.addUserDebugLine(ee_pos, target_position, color, lineWidth=2, lifeTime=0.01)
-                                    debug_text_id = p.addUserDebugText(label, mid_pos, color, textSize=1.2, lifeTime=0.01)
+                                if debug_text_id is None:
+                                    #debug_line_id = p.addUserDebugLine(ee_pos, target_position, color, lineWidth=2, lifeTime=0.01)
+                                    debug_text_id = p.addUserDebugText(label, mid_pos, color, textSize=1.2, lifeTime=0)
                                 else:
-                                    debug_line_id = p.addUserDebugLine(ee_pos, target_position, color, lineWidth=2, lifeTime=0.01,
-                                                                        replaceItemUniqueId=debug_line_id)
-                                    debug_text_id = p.addUserDebugText(label, mid_pos, color, textSize=1.2, lifeTime=0.01,
-                                                                        replaceItemUniqueId=debug_text_id)
+                                    #debug_line_id = p.addUserDebugLine(ee_pos, target_position, color, lineWidth=2, lifeTime=0.01, replaceItemUniqueId=debug_line_id)
+                                    debug_text_id = p.addUserDebugText(label, mid_pos, color, textSize=1.2, lifeTime=0, replaceItemUniqueId=debug_text_id)
                             else:
                                 print(f"Skipping debug draw — invalid pos: ee={ee_pos} target={target_position}")
                             
@@ -342,3 +419,5 @@ except KeyboardInterrupt:
 finally:
     csv_file.close()
     print(f"Dataset salvato in: {csv_path}")
+    if p.isConnected():
+        p.disconnect()
