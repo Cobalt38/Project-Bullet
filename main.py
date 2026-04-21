@@ -5,6 +5,7 @@ import math
 import numpy as np
 import os
 import csv
+from tqdm import tqdm
 
 roboPos = [0,0,0]
 THRESHOLD = 0.02  # max errore IK accettabile (in metri)
@@ -269,155 +270,160 @@ for a, b in edges:
     p.addUserDebugLine(corners[a].tolist(), corners[b].tolist(),
                        [1, 0.5, 0], lineWidth=1.5, lifeTime=0)
     
+point_combinations = [(i,j,k) for i in iSteps for j in jSteps for k in kSteps]
+    
 #CAMPIONAMENTO
 try:
-    for i_map in iSteps:
-        for j_map in jSteps:
-            for k_map in kSteps:
-                target_position = list(np.array([i_map, j_map, k_map]) + np.array(MAPOFFSET))  ##[i_map + MAPOFFSET[0], j_map + MAPOFFSET[1], k_map + MAPOFFSET[2]] 
-                #print(f"\n--- Target position: ({i_map:.2f}, {j_map:.2f}, {k_map:.2f}) ---")
-                p.resetBasePositionAndOrientation(target, target_position, [0, 0, 0, 1])
-                desired_pos = list(np.array(target_position) + np.array(APPROACH_OFFSET))
-                
-                # ee_pos = p.getLinkState(robo2, 4)[4]
-                # p.addUserDebugPoints([ee_pos], [[1,0,0]], pointSize=10, lifeTime=2)
-                
-                # Reset alla rest pose PRIMA di calcolare l'IK
-                # così il seed è sempre consistente e l'IK non diverge
-                for i, joint_id in enumerate(arm_joints):
-                    p.resetJointState(robo, joint_id, REST_POSE[i])
+    for i_map, j_map, k_map in tqdm(point_combinations, desc="Punti", unit="pt", bar_format="{l_bar}{bar:25}{r_bar}"):
+        
+        target_position = list(np.array([i_map, j_map, k_map]) + np.array(MAPOFFSET))  ##[i_map + MAPOFFSET[0], j_map + MAPOFFSET[1], k_map + MAPOFFSET[2]] 
+        #print(f"\n--- Target position: ({i_map:.2f}, {j_map:.2f}, {k_map:.2f}) ---")
+        p.resetBasePositionAndOrientation(target, target_position, [0, 0, 0, 1])
+        desired_pos = list(np.array(target_position) + np.array(APPROACH_OFFSET))
+        
+        # ee_pos = p.getLinkState(robo2, 4)[4]
+        # p.addUserDebugPoints([ee_pos], [[1,0,0]], pointSize=10, lifeTime=2)
+        
+        # Reset alla rest pose PRIMA di calcolare l'IK
+        # così il seed è sempre consistente e l'IK non diverge
+        for i, joint_id in enumerate(arm_joints):
+            p.resetJointState(robo, joint_id, REST_POSE[i])
 
-                ik_angles = p.calculateInverseKinematics(
-                    bodyUniqueId=robo,
-                    endEffectorLinkIndex=EE_LINK_INDEX,
-                    targetPosition=desired_pos,
-                    #non specifico targetOrientation così da ottenere la soluzione più naturale e usala come riferimento per i campionamenti di rotazione locali
-                    lowerLimits=lower_limits,
-                    upperLimits=upper_limits,
-                    jointRanges=joint_ranges,
-                    restPoses=REST_POSE,
-                    maxNumIterations=200,
-                    residualThreshold=1e-5
-                )
+        ik_angles = p.calculateInverseKinematics(
+            bodyUniqueId=robo,
+            endEffectorLinkIndex=EE_LINK_INDEX,
+            targetPosition=desired_pos,
+            #non specifico targetOrientation così da ottenere la soluzione più naturale e usala come riferimento per i campionamenti di rotazione locali
+            lowerLimits=lower_limits,
+            upperLimits=upper_limits,
+            jointRanges=joint_ranges,
+            restPoses=REST_POSE,
+            maxNumIterations=200,
+            residualThreshold=1e-5
+        )
 
-                for joint_id in arm_joints:
-                    p.resetJointState(
+        for joint_id in arm_joints:
+            p.resetJointState(
+                bodyUniqueId=robo,
+                jointIndex=joint_id,
+                targetValue=ik_angles[joint_id]
+            )
+
+        p.stepSimulation()
+
+        ee_ref_orientation = p.getLinkState(robo, EE_LINK_INDEX)[5]
+        #print(f"EE orientation (quaternion): {ee_ref_orientation}")
+
+        for sampleX in xSamples: 
+            for sampleY in ySamples:
+                for sampleZ in zSamples:
+                    #print(f"Trying offset = ({sampleX:.2f}, {sampleY:.2f}, {sampleZ:.2f})")
+
+                    # --- Calcola orientamento target combinando gli offset di rotazione locali ---
+                    q_target = local_axes_to_quaternion(ee_ref_orientation, sampleX, sampleY, sampleZ)
+
+                    # --- DEBUG: visualizza orientamento target con cilindro e sfera ---
+                    p.resetBasePositionAndOrientation(debug_cylinder, desired_pos, q_target)
+                    tip_offset_local = np.array([0, 0, 0])
+                    R = quaternion_to_matrix(q_target)
+                    tip_offset_world = R @ tip_offset_local
+                    tip_pos = [desired_pos[i] + tip_offset_world[i] for i in range(3)]
+                    p.resetBasePositionAndOrientation(debug_tip, tip_pos, [0,0,0,1])
+
+                    p.resetBasePositionAndOrientation(debug_cylinder, desired_pos, q_target)
+
+                    # Calcola posizione orecchie nel world frame
+                    R = quaternion_to_matrix(q_target)
+                    x_axis = R[:, 0]  # asse X locale del cilindro nel world
+
+                    # Le orecchie stanno all'inizio del cilindro 
+                    z_axis = R[:, 2]
+                    mid_cyl = np.array(desired_pos) #- z_axis * 0.01
+
+                    ear_left_pos  = mid_cyl + x_axis * ear_offset
+                    ear_right_pos = mid_cyl - x_axis * ear_offset
+
+                    p.resetBasePositionAndOrientation(debug_ear_left,  ear_left_pos.tolist(),  q_target)
+                    p.resetBasePositionAndOrientation(debug_ear_right, ear_right_pos.tolist(), q_target)
+
+                    # --- fine debug orientamento target ---
+
+                    p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 0)  # spegni renderer
+                    
+                    # Reset alla rest pose PRIMA di calcolare l'IK
+                    # così il seed è sempre consistente e l'IK non diverge
+                    for i, joint_id in enumerate(arm_joints):
+                        p.resetJointState(robo, joint_id, REST_POSE[i])
+
+                    ik_angles = p.calculateInverseKinematics(
                         bodyUniqueId=robo,
-                        jointIndex=joint_id,
-                        targetValue=ik_angles[joint_id]
+                        endEffectorLinkIndex=EE_LINK_INDEX,
+                        targetPosition=desired_pos,
+                        targetOrientation=q_target,
+                        lowerLimits=lower_limits,
+                        upperLimits=upper_limits,
+                        jointRanges=joint_ranges,
+                        restPoses=REST_POSE,
+                        maxNumIterations=200,
+                        residualThreshold=1e-5
                     )
 
-                p.stepSimulation()
+                    for joint_id in arm_joints:
+                        p.resetJointState(
+                            bodyUniqueId=robo,
+                            jointIndex=joint_id,
+                            targetValue=ik_angles[joint_id]
+                        )
 
-                ee_ref_orientation = p.getLinkState(robo, EE_LINK_INDEX)[5]
-                #print(f"EE orientation (quaternion): {ee_ref_orientation}")
+                    p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 1)  # riaccendi renderer
+                    p.stepSimulation()
 
-                for sampleX in xSamples: 
-                    for sampleY in ySamples:
-                        for sampleZ in zSamples:
-                            #print(f"Trying offset = ({sampleX:.2f}, {sampleY:.2f}, {sampleZ:.2f})")
+                    # --- Verifica IK ---
+                    ee_state = p.getLinkState(robo, EE_LINK_INDEX)
+                    ee_pos = ee_state[4]  # punta dell'EEF
 
-                            # --- Calcola orientamento target combinando gli offset di rotazione locali ---
-                            q_target = local_axes_to_quaternion(ee_ref_orientation, sampleX, sampleY, sampleZ)
+                    ik_error = math.sqrt(sum((ee_pos[i] - desired_pos[i])**2 for i in range(3)))
+                    dist_to_cube = math.sqrt(sum((ee_pos[i] - target_position[i])**2 for i in range(3)))
 
-                            # --- DEBUG: visualizza orientamento target con cilindro e sfera ---
-                            p.resetBasePositionAndOrientation(debug_cylinder, desired_pos, q_target)
-                            tip_offset_local = np.array([0, 0, 0])
-                            R = quaternion_to_matrix(q_target)
-                            tip_offset_world = R @ tip_offset_local
-                            tip_pos = [desired_pos[i] + tip_offset_world[i] for i in range(3)]
-                            p.resetBasePositionAndOrientation(debug_tip, tip_pos, [0,0,0,1])
+                    status = "OK" if ik_error < THRESHOLD else "FAIL"
 
-                            p.resetBasePositionAndOrientation(debug_cylinder, desired_pos, q_target)
+                    # Punto medio tra EEF e target — dove mettere il testo
+                    mid_pos = [(ee_pos[i] + target_position[i]) / 2 for i in range(3)]
+                    mid_pos[2] += 0.05  # solleva un po' il testo per non sovrapporsi alla linea
 
-                            # Calcola posizione orecchie nel world frame
-                            R = quaternion_to_matrix(q_target)
-                            x_axis = R[:, 0]  # asse X locale del cilindro nel world
+                    label = f"{dist_to_cube*100:.1f} cm [{status}]"
 
-                            # Le orecchie stanno all'inizio del cilindro 
-                            z_axis = R[:, 2]
-                            mid_cyl = np.array(desired_pos) #- z_axis * 0.01
+                    # Colore: verde se OK, rosso se FAIL
+                    color = [0, 1, 0] if ik_error < THRESHOLD else [1, 0, 0]
 
-                            ear_left_pos  = mid_cyl + x_axis * ear_offset
-                            ear_right_pos = mid_cyl - x_axis * ear_offset
-
-                            p.resetBasePositionAndOrientation(debug_ear_left,  ear_left_pos.tolist(),  q_target)
-                            p.resetBasePositionAndOrientation(debug_ear_right, ear_right_pos.tolist(), q_target)
-
-                            # --- fine debug orientamento target ---
-
-                            time.sleep(0.01)
-
-                            p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 0)  # spegni renderer
-                            
-                            # Reset alla rest pose PRIMA di calcolare l'IK
-                            # così il seed è sempre consistente e l'IK non diverge
-                            for i, joint_id in enumerate(arm_joints):
-                                p.resetJointState(robo, joint_id, REST_POSE[i])
-
-                            ik_angles = p.calculateInverseKinematics(
-                                bodyUniqueId=robo,
-                                endEffectorLinkIndex=EE_LINK_INDEX,
-                                targetPosition=desired_pos,
-                                targetOrientation=q_target,
-                                lowerLimits=lower_limits,
-                                upperLimits=upper_limits,
-                                jointRanges=joint_ranges,
-                                restPoses=REST_POSE,
-                                maxNumIterations=200,
-                                residualThreshold=1e-5
-                            )
-
-                            for joint_id in arm_joints:
-                                p.resetJointState(
-                                    bodyUniqueId=robo,
-                                    jointIndex=joint_id,
-                                    targetValue=ik_angles[joint_id]
-                                )
-
-                            p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 1)  # riaccendi renderer
-                            p.stepSimulation()
-
-                            # --- Verifica IK ---
-                            ee_state = p.getLinkState(robo, EE_LINK_INDEX)
-                            ee_pos = ee_state[4]  # punta dell'EEF
-
-                            ik_error = math.sqrt(sum((ee_pos[i] - desired_pos[i])**2 for i in range(3)))
-                            dist_to_cube = math.sqrt(sum((ee_pos[i] - target_position[i])**2 for i in range(3)))
-
-                            status = "OK" if ik_error < THRESHOLD else "FAIL"
-
-                            # Punto medio tra EEF e target — dove mettere il testo
-                            mid_pos = [(ee_pos[i] + target_position[i]) / 2 for i in range(3)]
-                            mid_pos[2] += 0.05  # solleva un po' il testo per non sovrapporsi alla linea
-
-                            label = f"{dist_to_cube*100:.1f} cm [{status}]"
-
-                            # Colore: verde se OK, rosso se FAIL
-                            color = [0, 1, 0] if ik_error < THRESHOLD else [1, 0, 0]
-
-                            # Aggiorna linea (replaceItemUniqueId evita di accumulare debug line ad ogni iterazione)
-                            if is_valid_pos(ee_pos) and is_valid_pos(target_position) and is_valid_pos(mid_pos):
-                                if debug_text_id is None:
-                                    #debug_line_id = p.addUserDebugLine(ee_pos, target_position, color, lineWidth=2, lifeTime=0.01)
-                                    debug_text_id = p.addUserDebugText(label, mid_pos, color, textSize=1.2, lifeTime=0)
-                                else:
-                                    #debug_line_id = p.addUserDebugLine(ee_pos, target_position, color, lineWidth=2, lifeTime=0.01, replaceItemUniqueId=debug_line_id)
-                                    debug_text_id = p.addUserDebugText(label, mid_pos, color, textSize=1.2, lifeTime=0, replaceItemUniqueId=debug_text_id)
-                            else:
-                                print(f"Skipping debug draw — invalid pos: ee={ee_pos} target={target_position}")
-                            
-                            # --- Salva su CSV solo se IK OK ---
-                            if ik_error < THRESHOLD:
-                                csv_writer.writerow([
-                                    *desired_pos,                        # x, y, z target
-                                    *q_target,                           # qx, qy, qz, qw orientamento
-                                    *[ik_angles[j] for j in arm_joints]  # j0..j4
-                                ])
+                    # # Aggiorna linea (replaceItemUniqueId evita di accumulare debug line ad ogni iterazione)
+                    # if is_valid_pos(ee_pos) and is_valid_pos(target_position) and is_valid_pos(mid_pos):
+                    #     if debug_text_id is None:
+                    #         #debug_line_id = p.addUserDebugLine(ee_pos, target_position, color, lineWidth=2, lifeTime=0.01)
+                    #         debug_text_id = p.addUserDebugText(label, mid_pos, color, textSize=1.2, lifeTime=0)
+                    #     else:
+                    #         #debug_line_id = p.addUserDebugLine(ee_pos, target_position, color, lineWidth=2, lifeTime=0.01, replaceItemUniqueId=debug_line_id)
+                    #         debug_text_id = p.addUserDebugText(label, mid_pos, color, textSize=1.2, lifeTime=0, replaceItemUniqueId=debug_text_id)
+                    # else:
+                    #     print(f"Skipping debug draw — invalid pos: ee={ee_pos} target={target_position}")
+                    
+                    # --- Salva su CSV solo se IK OK ---
+                    if ik_error < THRESHOLD:
+                        csv_writer.writerow([
+                            *desired_pos,                        # x, y, z target
+                            *q_target,                           # qx, qy, qz, qw orientamento
+                            *[ik_angles[j] for j in arm_joints]  # j0..j4
+                        ])
+                # time.sleep(0.01)  # rallenta un po' per vedere meglio i debug (opzionale)        
 except KeyboardInterrupt:
-    print("Campionamento interrotto dall'utente.")
+    print("Interrotto dall'utente.")
+except Exception as e:
+    print(f"Errore: {e}")
+    import traceback
+    traceback.print_exc()
 finally:
+    print("Chiusura...")
     csv_file.close()
-    print(f"Dataset salvato in: {csv_path}")
     if p.isConnected():
         p.disconnect()
+    print("Fatto.")
