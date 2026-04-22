@@ -8,17 +8,19 @@ import argparse
 from tqdm import tqdm
 
 roboPos = [0,0,0]
-THRESHOLD = 0.02  # max errore IK accettabile (in metri)
+THRESHOLD = 0.005  # max errore IK accettabile (in metri)
 APPROACH_OFFSET = [0,0,0]  # offset rispetto al target
 
 MAPSIZE = [0.4, 0.4, 0.2]      # dimensione del cubo di test (in metri)
-MAPSTEPS = [6, 6, 5]         # quanti step di offset testare lungo ogni asse 
-MAPOFFSET = [0, 0, 0.05]       # offset del centro del cubo rispetto alla base globale (in metri)
+MAPSTEPS = [200, 200, 100]         # quanti step di offset testare lungo ogni asse 
+MAPOFFSET = [0, 0, 0.05]       # offset del centro del cubo rispetto alla base globale (in metri) 
 
 #ROTATION SAMPLES
-XRANGE, XSAMPLES = math.pi/2, 100
+XRANGE, XSAMPLES = math.pi/2, 45
 YRANGE, YSAMPLES = math.pi/2, 1
-ZRANGE, ZSAMPLES = math.pi*2, 100
+ZRANGE, ZSAMPLES = math.pi*2, 36
+
+points_added = 0
 
 # --- Argomento CLI per modalità headless ---
 parser = argparse.ArgumentParser()
@@ -272,7 +274,7 @@ point_combinations = [(i,j,k) for i in iSteps for j in jSteps for k in kSteps]
     
 #CAMPIONAMENTO
 try:
-    for i_map, j_map, k_map in tqdm(point_combinations, desc="Punti", unit="pt", bar_format="{l_bar}{bar:25}{r_bar}"):
+    for i_map, j_map, k_map in (pbar := tqdm(point_combinations, desc="Punti", unit="pt", bar_format="{l_bar}{bar:25}{r_bar}{postfix}")):
         
         target_position = list(np.array([i_map, j_map, k_map]) + np.array(MAPOFFSET))  ##[i_map + MAPOFFSET[0], j_map + MAPOFFSET[1], k_map + MAPOFFSET[2]] 
         #print(f"\n--- Target position: ({i_map:.2f}, {j_map:.2f}, {k_map:.2f}) ---")
@@ -414,6 +416,8 @@ try:
                             *q_target,                           # qx, qy, qz, qw orientamento
                             *[ik_angles[j] for j in arm_joints]  # j0..j4
                         ])
+                        points_added += 1
+                        pbar.set_postfix({"saved": points_added}, refresh=False)
                 # time.sleep(0.01)  # rallenta un po' per vedere meglio i debug (opzionale)        
 except KeyboardInterrupt:
     print("Interrotto dall'utente.")
