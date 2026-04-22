@@ -1,10 +1,10 @@
 import pybullet as p
 import pybullet_data
-import time
 import math
 import numpy as np
 import os
 import csv
+import argparse
 from tqdm import tqdm
 
 roboPos = [0,0,0]
@@ -20,17 +20,21 @@ XRANGE, XSAMPLES = math.pi/2, 100
 YRANGE, YSAMPLES = math.pi/2, 1
 ZRANGE, ZSAMPLES = math.pi*2, 100
 
+# --- Argomento CLI per modalità headless ---
+parser = argparse.ArgumentParser()
+parser.add_argument("--headless", action="store_true", help="Esegui senza GUI")
+args = parser.parse_args()
+
 ## setup
-p.connect(p.GUI)
+if args.headless:
+    p.connect(p.DIRECT)   # simulazione in background
+else:
+    p.connect(p.GUI)
 p.resetSimulation()
 p.setGravity(gravX=0, gravY=0, gravZ=0)
 p.setAdditionalSearchPath(path=pybullet_data.getDataPath())
 
-def render(sec=1):
-    for _ in range(int(240*sec)):
-        p.stepSimulation()
-        time.sleep(1/240)
-
+# --- FUNZIONI UTILI ---
 def quaternion_multiply(q1, q2):
     """q1 * q2 — composizione di quaternioni (x, y, z, w)"""
     x1, y1, z1, w1 = q1
@@ -73,7 +77,6 @@ def local_axes_to_quaternion(q_ref, rx, ry, rz):
 
     return q_result
 
-
 def quaternion_to_matrix(q):
     """Converte quaternione (x,y,z,w) in matrice di rotazione 3x3"""
     x, y, z, w = q
@@ -95,11 +98,10 @@ def is_valid_pos(pos):
 
 # --- CARICAMENTO SCENA ---
 target = p.loadURDF("cube_small.urdf", basePosition=[1,0.75,0.1], useFixedBase=True, globalScaling=0.1)
-p.changeVisualShape(objectUniqueId=target, linkIndex=-1, rgbaColor=[1,0,0,1]) 
-#robo2 = p.loadURDF("franka_panda/panda.urdf", basePosition=roboPos, useFixedBase=True, globalScaling=1.0)
+if not args.headless:
+    p.changeVisualShape(objectUniqueId=target, linkIndex=-1, rgbaColor=[1,0,0,1]) # target rosso
 script_dir = os.path.dirname(os.path.abspath(__file__))
 urdf_path = os.path.join(script_dir, "xarm_model/urdf/xarm_fixed.urdf")
-print(f"Loading URDF from: {urdf_path}")
 robo = p.loadURDF(urdf_path, basePosition=roboPos, useFixedBase=True, globalScaling=1.0)
 
 # --- CONFIGURAZIONE ROBOT ---
@@ -107,14 +109,6 @@ robo = p.loadURDF(urdf_path, basePosition=roboPos, useFixedBase=True, globalScal
 REST_POSE = [0, 0.5, -0.5, 0.5, 0] #[0, -0.785, 0, -2.356, 0, 1.571, 0.785, 0.04, 0.04]
 arm_joints = [0, 1, 2, 3, 4] #[0, 1, 2, 3, 4, 5, 6]
 EE_LINK_INDEX = 5 #(panda:11, xarm:5)
-
-# Verifica i limiti di ogni giunto per configurare correttamente l'IK
-# for j in arm_joints:
-#     info = p.getJointInfo(robo, j)
-#     name = info[1].decode()
-#     lo = math.degrees(info[8])
-#     hi = math.degrees(info[9])
-#     print(f"  {name}: [{lo:.1f}°, {hi:.1f}°]")
 
 # Limiti per l'IK: estratti direttamente dal robot per evitare errori di configurazione
 lower_limits = []
@@ -126,6 +120,15 @@ for j in arm_joints:
     lower_limits.append(info[8])
     upper_limits.append(info[9])
     joint_ranges.append(info[9] - info[8])
+
+print("=== ALL JOINTS ===")
+for i in range(p.getNumJoints(robo)):
+    info = p.getJointInfo(robo, i)
+    joint_name = info[1].decode()
+    joint_type = info[2]  # 0=revolute, 1=prismatic, 2=spherical, 3=planar, 4=fixed
+    link_name  = info[12].decode()
+    type_str   = {0:"REVOLUTE", 1:"PRISMATIC", 4:"FIXED"}.get(joint_type, str(joint_type))
+    print(f"  [{i}] {joint_name} ({type_str}) → link: {link_name}")
 
 # Verifica che la rest pose sia entro i limiti di ogni giunto, altrimenti l'IK potrebbe fallire
 # for i, j in enumerate(arm_joints):
@@ -147,77 +150,71 @@ for i in range(len(arm_joints)):
     header_row += [f"joint_{i}"]
 csv_writer.writerow(header_row)
 
-print("=== ALL JOINTS ===")
-for i in range(p.getNumJoints(robo)):
-    info = p.getJointInfo(robo, i)
-    joint_name = info[1].decode()
-    joint_type = info[2]  # 0=revolute, 1=prismatic, 2=spherical, 3=planar, 4=fixed
-    link_name  = info[12].decode()
-    type_str   = {0:"REVOLUTE", 1:"PRISMATIC", 4:"FIXED"}.get(joint_type, str(joint_type))
-    print(f"  [{i}] {joint_name} ({type_str}) → link: {link_name}")
 
-# Offset fisso di rotazione per allineare l'asse "lungo" del cilindro con Z locale
+# Offset fisso di rotazione per allineare l'asse "lungo" del cilindro con Z locale - prova a ruotare di 90° attorno a X o Y se non funziona così
 Q_CYLINDER_FIX = p.getQuaternionFromEuler([0,0,0])#[math.pi/2, 0, 0])
 
-debug_cylinder_visual = p.createVisualShape(
-    shapeType=p.GEOM_CYLINDER,
-    radius=0.015,
-    length=0.10,
-    rgbaColor=[0, 0.5, 1, 0.35],
-    visualFramePosition=[0, 0, -0.05],        # cilindro esteso -10cm dal frame
-    visualFrameOrientation=Q_CYLINDER_FIX     # fix asse Y→Z 
-)
-debug_cylinder = p.createMultiBody(
-    baseMass=0,
-    baseVisualShapeIndex=debug_cylinder_visual,
-    basePosition=[0, 0, 0],
-    baseOrientation=[0, 0, 0, 1]
-)
-debug_tip_visual = p.createVisualShape(
-    shapeType=p.GEOM_SPHERE,
-    radius=0.015,
-    rgbaColor=[0.6, 0.1, 0.6, 0.6] 
-)
-debug_tip = p.createMultiBody(
-    baseMass=0,
-    baseVisualShapeIndex=debug_tip_visual,
-    basePosition=[0, 0, 0]
-)
-ear_offset = 0.015 # distanza laterale delle "orecchie" dal centro del cilindro
+# --- DEBUG VISUALI (solo in modalità non headless) ---
+if not args.headless:
+    debug_cylinder_visual = p.createVisualShape(
+        shapeType=p.GEOM_CYLINDER,
+        radius=0.015,
+        length=0.10,
+        rgbaColor=[0, 0.5, 1, 0.35],
+        visualFramePosition=[0, 0, -0.05],        # cilindro esteso -10cm dal frame
+        visualFrameOrientation=Q_CYLINDER_FIX     # fix asse Y→Z 
+    )
+    debug_cylinder = p.createMultiBody(
+        baseMass=0,
+        baseVisualShapeIndex=debug_cylinder_visual,
+        basePosition=[0, 0, 0],
+        baseOrientation=[0, 0, 0, 1]
+    )
+    debug_tip_visual = p.createVisualShape(
+        shapeType=p.GEOM_SPHERE,
+        radius=0.015,
+        rgbaColor=[0.6, 0.1, 0.6, 0.6] 
+    )
+    debug_tip = p.createMultiBody(
+        baseMass=0,
+        baseVisualShapeIndex=debug_tip_visual,
+        basePosition=[0, 0, 0]
+    )
+    ear_offset = 0.015 # distanza laterale delle "orecchie" dal centro del cilindro
 
-debug_ear_left_visual = p.createVisualShape(
-    shapeType=p.GEOM_CYLINDER,
-    radius=0.006,
-    length=0.01,
-    rgbaColor=[1, 0.3, 0.0, 0.5],  # arancione
-    visualFramePosition=[0, 0, 0],
-    visualFrameOrientation=p.getQuaternionFromEuler([0, math.pi/2, 0])  # perpendicolare
-)
-debug_ear_left = p.createMultiBody(
-    baseMass=0,
-    baseVisualShapeIndex=debug_ear_left_visual,
-    basePosition=[0, 0, 0],
-    baseOrientation=[0, 0, 0, 1]
-)
+    debug_ear_left_visual = p.createVisualShape(
+        shapeType=p.GEOM_CYLINDER,
+        radius=0.006,
+        length=0.01,
+        rgbaColor=[1, 0.3, 0.0, 0.5],  # arancione
+        visualFramePosition=[0, 0, 0],
+        visualFrameOrientation=p.getQuaternionFromEuler([0, math.pi/2, 0])  # perpendicolare
+    )
+    debug_ear_left = p.createMultiBody(
+        baseMass=0,
+        baseVisualShapeIndex=debug_ear_left_visual,
+        basePosition=[0, 0, 0],
+        baseOrientation=[0, 0, 0, 1]
+    )
 
-debug_ear_right_visual = p.createVisualShape(
-    shapeType=p.GEOM_CYLINDER,
-    radius=0.006,
-    length=0.01,
-    rgbaColor=[0.2, 0.85, 0.1, 0.5],  # verde
-    visualFramePosition=[0, 0, 0],
-    visualFrameOrientation=p.getQuaternionFromEuler([0, math.pi/2, 0])
-)
-debug_ear_right = p.createMultiBody(
-    baseMass=0,
-    baseVisualShapeIndex=debug_ear_right_visual,
-    basePosition=[0, 0, 0],
-    baseOrientation=[0, 0, 0, 1]
-)
+    debug_ear_right_visual = p.createVisualShape(
+        shapeType=p.GEOM_CYLINDER,
+        radius=0.006,
+        length=0.01,
+        rgbaColor=[0.2, 0.85, 0.1, 0.5],  # verde
+        visualFramePosition=[0, 0, 0],
+        visualFrameOrientation=p.getQuaternionFromEuler([0, math.pi/2, 0])
+    )
+    debug_ear_right = p.createMultiBody(
+        baseMass=0,
+        baseVisualShapeIndex=debug_ear_right_visual,
+        basePosition=[0, 0, 0],
+        baseOrientation=[0, 0, 0, 1]
+    )
 
-# --- Distance line debug ---
-debug_line_id = None
-debug_text_id = None
+    # --- Distance line debug ---
+    debug_line_id = None
+    debug_text_id = None
 
 # --- PREPARAZIONE CAMPIONAMENTO ---
 xSamples = make_samples(XSAMPLES, XRANGE/2)
@@ -228,47 +225,48 @@ iSteps = make_samples(MAPSTEPS[0], MAPSIZE[0]/2)
 jSteps = make_samples(MAPSTEPS[1], MAPSIZE[1]/2)
 kSteps = make_samples(MAPSTEPS[2], MAPSIZE[2]/2)
 
-# --- VISUALIZZA PUNTI DI CAMPIONAMENTO ---
-for i_map in iSteps:
-    for j_map in jSteps:
-        for k_map in kSteps:
-            pos = list(np.array([i_map, j_map, k_map]) + np.array(MAPOFFSET))
-            p.addUserDebugPoints(
-                pointPositions=[pos],
-                pointColorsRGB=[[1, 0.5, 0]],   # arancione
-                pointSize=3,
-                lifeTime=0
-            )
+# --- VISUALIZZAZIONE PUNTI E VOLUME DI CAMPIONAMENTO ---
+if not args.headless:
+    for i_map in iSteps:
+        for j_map in jSteps:
+            for k_map in kSteps:
+                pos = list(np.array([i_map, j_map, k_map]) + np.array(MAPOFFSET))
+                p.addUserDebugPoints(
+                    pointPositions=[pos],
+                    pointColorsRGB=[[1, 0.5, 0]],   # arancione
+                    pointSize=3,
+                    lifeTime=0
+                )
 
-# --- VISUALIZZA VOLUME DI CAMPIONAMENTO ---
-half = np.array(MAPSIZE) / 2
-center = np.array(MAPOFFSET)
+    # --- VOLUME ---
+    half = np.array(MAPSIZE) / 2
+    center = np.array(MAPOFFSET)
 
-volume_visual = p.createVisualShape(
-    shapeType=p.GEOM_BOX,
-    halfExtents=half,
-    rgbaColor=[1, 0.5, 0, 0.08]
-)
-volume_body = p.createMultiBody(
-    baseMass=0,
-    baseVisualShapeIndex=volume_visual,
-    basePosition=center.tolist(),
-    baseOrientation=[0, 0, 0, 1]
-)
+    volume_visual = p.createVisualShape(
+        shapeType=p.GEOM_BOX,
+        halfExtents=half,
+        rgbaColor=[1, 0.5, 0, 0.08]
+    )
+    volume_body = p.createMultiBody(
+        baseMass=0,
+        baseVisualShapeIndex=volume_visual,
+        basePosition=center.tolist(),
+        baseOrientation=[0, 0, 0, 1]
+    )
 
-# Box wireframe
-corners = [
-    center + np.array([sx, sy, sz]) * half
-    for sx in [-1, 1] for sy in [-1, 1] for sz in [-1, 1]
-]
-edges = [
-    (0,1),(2,3),(4,5),(6,7),  # Z edges
-    (0,2),(1,3),(4,6),(5,7),  # Y edges
-    (0,4),(1,5),(2,6),(3,7)   # X edges
-]
-for a, b in edges:
-    p.addUserDebugLine(corners[a].tolist(), corners[b].tolist(),
-                       [1, 0.5, 0], lineWidth=1.5, lifeTime=0)
+    # Box wireframe
+    corners = [
+        center + np.array([sx, sy, sz]) * half
+        for sx in [-1, 1] for sy in [-1, 1] for sz in [-1, 1]
+    ]
+    edges = [
+        (0,1),(2,3),(4,5),(6,7),  # Z edges
+        (0,2),(1,3),(4,6),(5,7),  # Y edges
+        (0,4),(1,5),(2,6),(3,7)   # X edges
+    ]
+    for a, b in edges:
+        p.addUserDebugLine(corners[a].tolist(), corners[b].tolist(),
+                        [1, 0.5, 0], lineWidth=1.5, lifeTime=0)
     
 point_combinations = [(i,j,k) for i in iSteps for j in jSteps for k in kSteps]
     
@@ -286,8 +284,8 @@ try:
         
         # Reset alla rest pose PRIMA di calcolare l'IK
         # così il seed è sempre consistente e l'IK non diverge
-        for i, joint_id in enumerate(arm_joints):
-            p.resetJointState(robo, joint_id, REST_POSE[i])
+        for ji, joint_id in enumerate(arm_joints):
+            p.resetJointState(robo, joint_id, REST_POSE[ji])
 
         ik_angles = p.calculateInverseKinematics(
             bodyUniqueId=robo,
@@ -322,38 +320,38 @@ try:
                     # --- Calcola orientamento target combinando gli offset di rotazione locali ---
                     q_target = local_axes_to_quaternion(ee_ref_orientation, sampleX, sampleY, sampleZ)
 
-                    # --- DEBUG: visualizza orientamento target con cilindro e sfera ---
-                    p.resetBasePositionAndOrientation(debug_cylinder, desired_pos, q_target)
-                    tip_offset_local = np.array([0, 0, 0])
-                    R = quaternion_to_matrix(q_target)
-                    tip_offset_world = R @ tip_offset_local
-                    tip_pos = [desired_pos[i] + tip_offset_world[i] for i in range(3)]
-                    p.resetBasePositionAndOrientation(debug_tip, tip_pos, [0,0,0,1])
+                    if not args.headless:
+                        # --- DEBUG: visualizza orientamento target con cilindro e sfera ---
+                        tip_offset_local = np.array([0, 0, 0])
+                        R = quaternion_to_matrix(q_target)
+                        tip_offset_world = R @ tip_offset_local
+                        tip_pos = [desired_pos[i] + tip_offset_world[i] for i in range(3)]
+                        p.resetBasePositionAndOrientation(debug_tip, tip_pos, [0,0,0,1])
 
-                    p.resetBasePositionAndOrientation(debug_cylinder, desired_pos, q_target)
+                        p.resetBasePositionAndOrientation(debug_cylinder, desired_pos, q_target)
 
-                    # Calcola posizione orecchie nel world frame
-                    R = quaternion_to_matrix(q_target)
-                    x_axis = R[:, 0]  # asse X locale del cilindro nel world
+                        # Calcola posizione orecchie nel world frame
+                        R = quaternion_to_matrix(q_target)
+                        x_axis = R[:, 0]  # asse X locale del cilindro nel world
 
-                    # Le orecchie stanno all'inizio del cilindro 
-                    z_axis = R[:, 2]
-                    mid_cyl = np.array(desired_pos) #- z_axis * 0.01
+                        # Le orecchie stanno all'inizio del cilindro 
+                        z_axis = R[:, 2]
+                        mid_cyl = np.array(desired_pos) #- z_axis * 0.01
 
-                    ear_left_pos  = mid_cyl + x_axis * ear_offset
-                    ear_right_pos = mid_cyl - x_axis * ear_offset
+                        ear_left_pos  = mid_cyl + x_axis * ear_offset
+                        ear_right_pos = mid_cyl - x_axis * ear_offset
 
-                    p.resetBasePositionAndOrientation(debug_ear_left,  ear_left_pos.tolist(),  q_target)
-                    p.resetBasePositionAndOrientation(debug_ear_right, ear_right_pos.tolist(), q_target)
+                        p.resetBasePositionAndOrientation(debug_ear_left,  ear_left_pos.tolist(),  q_target)
+                        p.resetBasePositionAndOrientation(debug_ear_right, ear_right_pos.tolist(), q_target)
 
-                    # --- fine debug orientamento target ---
+                        # --- fine debug orientamento target ---
 
-                    p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 0)  # spegni renderer
+                        p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 0)  # spegni renderer
                     
                     # Reset alla rest pose PRIMA di calcolare l'IK
                     # così il seed è sempre consistente e l'IK non diverge
-                    for i, joint_id in enumerate(arm_joints):
-                        p.resetJointState(robo, joint_id, REST_POSE[i])
+                    for ji, joint_id in enumerate(arm_joints):
+                        p.resetJointState(robo, joint_id, REST_POSE[ji])
 
                     ik_angles = p.calculateInverseKinematics(
                         bodyUniqueId=robo,
@@ -375,7 +373,8 @@ try:
                             targetValue=ik_angles[joint_id]
                         )
 
-                    p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 1)  # riaccendi renderer
+                    if not args.headless:
+                        p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 1)  # riaccendi renderer
                     p.stepSimulation()
 
                     # --- Verifica IK ---
@@ -383,7 +382,7 @@ try:
                     ee_pos = ee_state[4]  # punta dell'EEF
 
                     ik_error = math.sqrt(sum((ee_pos[i] - desired_pos[i])**2 for i in range(3)))
-                    dist_to_cube = math.sqrt(sum((ee_pos[i] - target_position[i])**2 for i in range(3)))
+                    dist_to_cube = math.sqrt(sum((ee_pos[ji] - target_position[ji])**2 for ji in range(3)))
 
                     status = "OK" if ik_error < THRESHOLD else "FAIL"
 
@@ -397,15 +396,16 @@ try:
                     color = [0, 1, 0] if ik_error < THRESHOLD else [1, 0, 0]
 
                     # # Aggiorna linea (replaceItemUniqueId evita di accumulare debug line ad ogni iterazione)
-                    # if is_valid_pos(ee_pos) and is_valid_pos(target_position) and is_valid_pos(mid_pos):
-                    #     if debug_text_id is None:
-                    #         #debug_line_id = p.addUserDebugLine(ee_pos, target_position, color, lineWidth=2, lifeTime=0.01)
-                    #         debug_text_id = p.addUserDebugText(label, mid_pos, color, textSize=1.2, lifeTime=0)
+                    # if not args.headless:
+                    #     if is_valid_pos(ee_pos) and is_valid_pos(target_position) and is_valid_pos(mid_pos):
+                    #         if debug_text_id is None:
+                    #             #debug_line_id = p.addUserDebugLine(ee_pos, target_position, color, lineWidth=2, lifeTime=0.01)
+                    #             debug_text_id = p.addUserDebugText(label, mid_pos, color, textSize=1.2, lifeTime=0)
+                    #         else:
+                    #             #debug_line_id = p.addUserDebugLine(ee_pos, target_position, color, lineWidth=2, lifeTime=0.01, replaceItemUniqueId=debug_line_id)
+                    #             debug_text_id = p.addUserDebugText(label, mid_pos, color, textSize=1.2, lifeTime=0, replaceItemUniqueId=debug_text_id)
                     #     else:
-                    #         #debug_line_id = p.addUserDebugLine(ee_pos, target_position, color, lineWidth=2, lifeTime=0.01, replaceItemUniqueId=debug_line_id)
-                    #         debug_text_id = p.addUserDebugText(label, mid_pos, color, textSize=1.2, lifeTime=0, replaceItemUniqueId=debug_text_id)
-                    # else:
-                    #     print(f"Skipping debug draw — invalid pos: ee={ee_pos} target={target_position}")
+                    #         print(f"Skipping debug draw — invalid pos: ee={ee_pos} target={target_position}")
                     
                     # --- Salva su CSV solo se IK OK ---
                     if ik_error < THRESHOLD:
