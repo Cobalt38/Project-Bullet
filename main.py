@@ -1,3 +1,5 @@
+from time import sleep, time
+
 import pybullet as p
 import pybullet_data
 import math
@@ -7,17 +9,49 @@ import csv
 import argparse
 from tqdm import tqdm
 
+xarmConfig = {
+    "rest_pose": [0, 0.5, -0.5, 0.5, 0],
+    "arm_joints": [0, 1, 2, 3, 4],
+    "ee_link_index": 5,
+    "isLocalpath": True,
+    "urdf_path": "xarm_model/urdf/xarm_fixed.urdf"
+}
+
+pandaConfig = {
+    "rest_pose": [0, -0.215, 0, -2.57, 0, 2.356, 2.356],
+    "arm_joints": [0, 1, 2, 3, 4, 5, 6],
+    "ee_link_index": 11,
+    "isLocalpath": False,
+    "urdf_path": "franka_panda/panda.urdf"
+}
+
+biarmConfig = {
+    "rest_pose": [0, 0, 0, 1.2, 0, 0, 0],  # j4 ≥ 0, gomito leggermente flesso,  # lascia vuoto per dedurlo automaticamente dal robot
+    "arm_joints": [],  # lascia vuoto per dedurlo automaticamente dal robot
+    "ee_link_index": 8,
+    "isLocalpath": True,
+    "urdf_path": "biarm_model/openarm.urdf"
+}
+
+# --- CONFIGURAZIONE ROBOT ---
+ROBOT_CONFIG = pandaConfig
+
+REST_POSE = ROBOT_CONFIG["rest_pose"]
+ARM_JOINTS = ROBOT_CONFIG["arm_joints"]
+EE_LINK_INDEX = ROBOT_CONFIG["ee_link_index"] or None
+URDF_PATH = ROBOT_CONFIG["urdf_path"]
+
 roboPos = [0,0,0]
 THRESHOLD = 0.005  # max errore IK accettabile (in metri)
 APPROACH_OFFSET = [0,0,0]  # offset rispetto al target
 
-MAPSIZE = [0.4, 0.4, 0.2]      # dimensione del cubo di test (in metri)
-MAPSTEPS = [200, 200, 100]         # quanti step di offset testare lungo ogni asse 
-MAPOFFSET = [0, 0, 0.05]       # offset del centro del cubo rispetto alla base globale (in metri) 
+MAPSIZE = [1.2, 1.2, 0.6]      # dimensione del cubo di test (in metri)
+MAPSTEPS = [8, 8, 4]           # quanti step di offset testare lungo ogni asse 
+MAPOFFSET = [0, 0, 0.3]        # offset del centro del cubo rispetto alla base globale (in metri) 
 
 #ROTATION SAMPLES
-XRANGE, XSAMPLES = math.pi/2, 45
-YRANGE, YSAMPLES = math.pi/2, 1
+XRANGE, XSAMPLES = math.pi,   45
+YRANGE, YSAMPLES = math.pi,   45
 ZRANGE, ZSAMPLES = math.pi*2, 36
 
 points_added = 0
@@ -36,7 +70,21 @@ p.resetSimulation()
 p.setGravity(gravX=0, gravY=0, gravZ=0)
 p.setAdditionalSearchPath(path=pybullet_data.getDataPath())
 
+script_dir = os.path.dirname(os.path.abspath(__file__))
+
 # --- FUNZIONI UTILI ---
+def get_model_joints(robot_id):
+    num_joints = p.getNumJoints(robot_id) # Joints
+    print('#Joints:', num_joints)
+
+    controllable_joints = []
+    for i in range(num_joints):
+        joint_info = p.getJointInfo(robot_id, i)
+        if joint_info[2] == 0:  # revolute
+            controllable_joints.append(i)
+    
+    return controllable_joints
+
 def quaternion_multiply(q1, q2):
     """q1 * q2 — composizione di quaternioni (x, y, z, w)"""
     x1, y1, z1, w1 = q1
@@ -102,22 +150,34 @@ def is_valid_pos(pos):
 target = p.loadURDF("cube_small.urdf", basePosition=[1,0.75,0.1], useFixedBase=True, globalScaling=0.1)
 if not args.headless:
     p.changeVisualShape(objectUniqueId=target, linkIndex=-1, rgbaColor=[1,0,0,1]) # target rosso
-script_dir = os.path.dirname(os.path.abspath(__file__))
-urdf_path = os.path.join(script_dir, "xarm_model/urdf/xarm_fixed.urdf")
+if ROBOT_CONFIG["isLocalpath"]:
+     urdf_path = os.path.join(script_dir, URDF_PATH)
+else:     urdf_path = URDF_PATH
 robo = p.loadURDF(urdf_path, basePosition=roboPos, useFixedBase=True, globalScaling=1.0)
 
-# --- CONFIGURAZIONE ROBOT ---
-# Rest pose "neutra" - usata come seed per l'IK ad ogni step
-REST_POSE = [0, 0.5, -0.5, 0.5, 0] #[0, -0.785, 0, -2.356, 0, 1.571, 0.785, 0.04, 0.04]
-arm_joints = [0, 1, 2, 3, 4] #[0, 1, 2, 3, 4, 5, 6]
-EE_LINK_INDEX = 5 #(panda:11, xarm:5)
+# FIX CONFIGURAZIONE ROBOT (se necessario)
+if ARM_JOINTS is None or ARM_JOINTS == []:
+    print("Attenzione: non sono stati specificati gli arm_joints. Provo a dedurli dal robot...")
+    ARM_JOINTS = get_model_joints(robo)
+    print(f"  Arm joints dedotti: {ARM_JOINTS}")
+if REST_POSE is None or len(REST_POSE) != len(ARM_JOINTS):
+    print(f"  Non è stata specificata una rest_pose valida, imposto a zero per tutti i {len(ARM_JOINTS)} giunti.")
+    REST_POSE = [0] * len(ARM_JOINTS)
+if EE_LINK_INDEX is None:
+    print(f"Attenzione: end_eff_index {EE_LINK_INDEX} non è tra i controllable_joints dedotti.")
+    EE_LINK_INDEX = ARM_JOINTS[-1]  # fallback all'ultimo giunto se quello specificato non è valido
+    print(f"  Imposto end_eff_index a {EE_LINK_INDEX}")
+
+# DISABILITA COLLISIONI ROBOT (opzionale, ma evita che l'IK fallisca per collisioni durante il campionamento)
+for i in range(-1, p.getNumJoints(robo)):
+    p.setCollisionFilterGroupMask(robo, i, collisionFilterGroup=0, collisionFilterMask=0)
 
 # Limiti per l'IK: estratti direttamente dal robot per evitare errori di configurazione
 lower_limits = []
 upper_limits = []
 joint_ranges = []
 
-for j in arm_joints:
+for j in ARM_JOINTS:
     info = p.getJointInfo(robo, j)
     lower_limits.append(info[8])
     upper_limits.append(info[9])
@@ -148,7 +208,7 @@ header_row = [
     "target_x", "target_y", "target_z",
     "hand_quat_qx", "hand_quat_qy", "hand_quat_qz", "hand_quat_qw"
 ]
-for i in range(len(arm_joints)):
+for i in range(len(ARM_JOINTS)):
     header_row += [f"joint_{i}"]
 csv_writer.writerow(header_row)
 
@@ -286,7 +346,7 @@ try:
         
         # Reset alla rest pose PRIMA di calcolare l'IK
         # così il seed è sempre consistente e l'IK non diverge
-        for ji, joint_id in enumerate(arm_joints):
+        for ji, joint_id in enumerate(ARM_JOINTS):
             p.resetJointState(robo, joint_id, REST_POSE[ji])
 
         ik_angles = p.calculateInverseKinematics(
@@ -302,12 +362,8 @@ try:
             residualThreshold=1e-5
         )
 
-        for joint_id in arm_joints:
-            p.resetJointState(
-                bodyUniqueId=robo,
-                jointIndex=joint_id,
-                targetValue=ik_angles[joint_id]
-            )
+        for ji, joint_id in enumerate(ARM_JOINTS):
+            p.resetJointState(robo, joint_id, targetValue=ik_angles[ji])
 
         p.stepSimulation()
 
@@ -352,7 +408,7 @@ try:
                     
                     # Reset alla rest pose PRIMA di calcolare l'IK
                     # così il seed è sempre consistente e l'IK non diverge
-                    for ji, joint_id in enumerate(arm_joints):
+                    for ji, joint_id in enumerate(ARM_JOINTS):
                         p.resetJointState(robo, joint_id, REST_POSE[ji])
 
                     ik_angles = p.calculateInverseKinematics(
@@ -368,12 +424,8 @@ try:
                         residualThreshold=1e-5
                     )
 
-                    for joint_id in arm_joints:
-                        p.resetJointState(
-                            bodyUniqueId=robo,
-                            jointIndex=joint_id,
-                            targetValue=ik_angles[joint_id]
-                        )
+                    for ji, joint_id in enumerate(ARM_JOINTS):
+                        p.resetJointState(robo, joint_id, targetValue=ik_angles[ji])
 
                     if not args.headless:
                         p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 1)  # riaccendi renderer
@@ -414,11 +466,11 @@ try:
                         csv_writer.writerow([
                             *desired_pos,                        # x, y, z target
                             *q_target,                           # qx, qy, qz, qw orientamento
-                            *[ik_angles[j] for j in arm_joints]  # j0..j4
+                            *[ik_angles[j] for j in ARM_JOINTS]  # j0..j4
                         ])
                         points_added += 1
                         pbar.set_postfix({"saved": points_added}, refresh=False)
-                # time.sleep(0.01)  # rallenta un po' per vedere meglio i debug (opzionale)        
+                sleep(0.01)  # rallenta un po' per vedere meglio i debug (opzionale)        
 except KeyboardInterrupt:
     print("Interrotto dall'utente.")
 except Exception as e:

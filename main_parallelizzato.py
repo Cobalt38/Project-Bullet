@@ -1,3 +1,5 @@
+import signal
+
 import pybullet as p
 import pybullet_data
 import math
@@ -7,28 +9,57 @@ import csv
 import argparse
 import multiprocessing as mp
 from tqdm import tqdm
+from datetime import datetime
 
 # ─────────────────────────────────────────────
-#  CONFIGURAZIONE
+#  CONFIGURAZIONE ROBOT
 # ─────────────────────────────────────────────
-roboPos = [0, 0, 0]
-THRESHOLD      = 0.005
+xarmConfig = {
+    "rest_pose": [0, 0.5, -0.5, 0.5, 0],
+    "arm_joints": [0, 1, 2, 3, 4],
+    "ee_link_index": 5,
+    "isLocalpath": True,
+    "urdf_path": "xarm_model/urdf/xarm_fixed.urdf"
+}
+
+pandaConfig = {
+    "rest_pose": [0, -0.215, 0, -2.57, 0, 2.356, 2.356],
+    "arm_joints": [0, 1, 2, 3, 4, 5, 6],
+    "ee_link_index": 11,
+    "isLocalpath": False,
+    "urdf_path": "franka_panda/panda.urdf"
+}
+
+biarmConfig = {
+    "rest_pose": [0, 0, 0, 1.2, 0, 0, 0],
+    "arm_joints": [0, 1, 2, 3, 4, 5, 6],  # lascia vuoto per dedurlo automaticamente dal robot
+    "ee_link_index": 8,
+    "isLocalpath": True,
+    "urdf_path": "biarm_model/openarm.urdf"
+}
+
+ROBOT_CONFIG = biarmConfig
+
+# ─────────────────────────────────────────────
+#  PARAMETRI CAMPIONAMENTO
+# ─────────────────────────────────────────────
+roboPos         = [0, 0, 0]
+THRESHOLD       = 0.01  # max errore IK accettabile (in metri) — se troppo basso, rischia di non trovare soluzioni per target lontani; se troppo alto, rischia di accettare soluzioni con errori visibili
 APPROACH_OFFSET = [0, 0, 0]
 
-MAPSIZE   = [0.4, 0.4, 0.2]
-MAPSTEPS  = [200, 200, 100]
-MAPOFFSET = [0, 0, 0.05]
+MAPSIZE   = [0.8, 0.8, 0.6] # dimensione del cubo di test (in metri)
+MAPSTEPS  = [80, 80, 12] # quanti step di offset testare lungo ogni asse 
+MAPOFFSET = [0, 0, 0.3] # offset del centro del cubo rispetto alla base globale (in metri) 
 
 XRANGE, XSAMPLES = math.pi/2, 45
-YRANGE, YSAMPLES = math.pi/2, 1
+YRANGE, YSAMPLES = math.pi/2, 45
 ZRANGE, ZSAMPLES = math.pi*2, 36
-
-NUM_WORKERS = max(1, mp.cpu_count() - 1)  # lascia un core libero al sistema
 
 # ─────────────────────────────────────────────
 #  FUNZIONI MATEMATICHE  (usate in ogni worker)
 # ─────────────────────────────────────────────
 def quaternion_multiply(q1, q2):
+    """q1 * q2 — composizione di quaternioni (x, y, z, w)"""
     x1, y1, z1, w1 = q1
     x2, y2, z2, w2 = q2
     return (
@@ -39,21 +70,28 @@ def quaternion_multiply(q1, q2):
     )
 
 def quaternion_to_matrix(q):
+    """Converte quaternione (x,y,z,w) in matrice di rotazione 3x3"""
     x, y, z, w = q
     return np.array([
-        [1-2*(y*y+z*z),  2*(x*y-w*z),  2*(x*z+w*y)],
-        [  2*(x*y+w*z),1-2*(x*x+z*z),  2*(y*z-w*x)],
-        [  2*(x*z-w*y),  2*(y*z+w*x),1-2*(x*x+y*y)],
+        [1-2*(y*y+z*z),   2*(x*y-w*z),   2*(x*z+w*y)],
+        [  2*(x*y+w*z), 1-2*(x*x+z*z),   2*(y*z-w*x)],
+        [  2*(x*z-w*y),   2*(y*z+w*x), 1-2*(x*x+y*y)],
     ])
 
 def axis_angle_to_quaternion(axis, angle):
+    """Quaternione da asse (vettore 3D normalizzato) + angolo in radianti"""
     ax = np.array(axis, dtype=float)
     ax = ax / np.linalg.norm(ax)
     s = math.sin(angle / 2)
     return (ax[0]*s, ax[1]*s, ax[2]*s, math.cos(angle / 2))
 
 def local_axes_to_quaternion(q_ref, rx, ry, rz):
-    R      = quaternion_to_matrix(q_ref)
+    """
+    Offset combinato sui tre assi locali, indipendenti tra loro.
+    Porta gli assi locali nel frame world, costruisce lì i quaternioni
+    di rotazione, poi ricompone.
+    """
+    R = quaternion_to_matrix(q_ref)
     x_local = R[:, 0]
     y_local = R[:, 1]
     z_local = R[:, 2]
@@ -69,6 +107,57 @@ def make_samples(n, half_range):
         return [0.0]
     return list(np.linspace(-half_range, half_range, n))
 
+def get_model_joints(robot_id, client):
+    """Ritorna i joint revolute del robot"""
+    num_joints = p.getNumJoints(robot_id, physicsClientId=client)
+    print(f'#Joints: {num_joints}')
+    controllable_joints = []
+    for i in range(num_joints):
+        joint_info = p.getJointInfo(robot_id, i, physicsClientId=client)
+        if joint_info[2] == 0:  # revolute
+            controllable_joints.append(i)
+    return controllable_joints
+
+# ─────────────────────────────────────────────
+#  LOGGING
+# ─────────────────────────────────────────────
+def init_log(log_path, n_workers, n_chunks, total_points, arm_joints, ee_link_index, rest_pose):
+    """Apre (o crea) il file di log e scrive l'header della run corrente."""
+    file_exists = os.path.exists(log_path)
+    log = open(log_path, "a", buffering=1)  # line-buffered: ogni riga va subito su disco
+    if file_exists:
+        log.write("\n")  # riga vuota di separazione dalla run precedente
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log.write(f"{'='*60}\n")
+    log.write(f"  RUN  {ts}\n")
+    log.write(f"{'='*60}\n")
+    log.write(f"  Workers     : {n_workers}\n")
+    log.write(f"  Chunks      : {n_chunks}\n")
+    log.write(f"  Punti totali: {total_points}\n")
+    log.write(f"  ARM_JOINTS  : {arm_joints}\n")
+    log.write(f"  EE_LINK_IDX : {ee_link_index}\n")
+    log.write(f"  REST_POSE   : {rest_pose}\n")
+    log.write(f"  MAPSIZE     : {MAPSIZE}  MAPSTEPS: {MAPSTEPS}  MAPOFFSET: {MAPOFFSET}\n")
+    log.write(f"  Rotazioni   : X={XSAMPLES} Y={YSAMPLES} Z={ZSAMPLES}\n")
+    log.write(f"  THRESHOLD   : {THRESHOLD}\n")
+    log.write(f"{'-'*60}\n")
+    return log
+
+def log_worker(log, chunk_id, processed_points, n_results):
+    ts = datetime.now().strftime("%H:%M:%S")
+    log.write(f"  [{ts}] Worker chunk {chunk_id:>4} | punti: {processed_points:>5} | soluzioni: {n_results:>7}\n")
+
+def log_summary(log, total_saved, total_points, elapsed_sec):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    h, rem = divmod(int(elapsed_sec), 3600)
+    m, s   = divmod(rem, 60)
+    log.write(f"{'-'*60}\n")
+    log.write(f"  Fine run     : {ts}\n")
+    log.write(f"  Durata       : {h:02d}:{m:02d}:{s:02d}\n")
+    log.write(f"  Righe salvate: {total_saved} / {total_points} punti processati\n")
+    log.write(f"{'='*60}\n")
+
+
 # ─────────────────────────────────────────────
 #  WORKER  — gira in un processo separato
 # ─────────────────────────────────────────────
@@ -77,22 +166,51 @@ def worker_task(args):
 
     import pybullet as p
     import pybullet_data
-    import os, csv, math, numpy as np
+    import os, math
+    import numpy as np
 
     (THRESHOLD, APPROACH_OFFSET, REST_POSE, arm_joints,
      EE_LINK_INDEX, xSamples, ySamples, zSamples,
-     roboPos, script_dir) = config
+     roboPos, script_dir, robot_config) = config
 
     client = p.connect(p.DIRECT)
     p.setGravity(0, 0, 0, physicsClientId=client)
     p.setAdditionalSearchPath(pybullet_data.getDataPath(), physicsClientId=client)
 
-    urdf_path = os.path.join(script_dir, "xarm_model/urdf/xarm_fixed.urdf")
+    if robot_config["isLocalpath"]:
+        urdf_path = os.path.join(script_dir, robot_config["urdf_path"])
+    else:
+        urdf_path = robot_config["urdf_path"]
+
     robo = p.loadURDF(urdf_path, basePosition=roboPos,
                       useFixedBase=True, physicsClientId=client)
 
+    # FIX CONFIGURAZIONE ROBOT (se necessario)
+    actual_arm_joints = arm_joints
+    actual_rest_pose  = REST_POSE
+    actual_ee_index   = EE_LINK_INDEX
+
+    if actual_arm_joints is None or actual_arm_joints == []:
+        num_joints = p.getNumJoints(robo, physicsClientId=client)
+        actual_arm_joints = [
+            i for i in range(num_joints)
+            if p.getJointInfo(robo, i, physicsClientId=client)[2] == 0
+        ]
+    if actual_rest_pose is None or len(actual_rest_pose) != len(actual_arm_joints):
+        actual_rest_pose = [0] * len(actual_arm_joints)
+    if actual_ee_index is None:
+        actual_ee_index = actual_arm_joints[-1]
+
+    # Disabilita collisioni robot (evita incastri durante il campionamento IK)
+    for i in range(-1, p.getNumJoints(robo, physicsClientId=client)):
+        p.setCollisionFilterGroupMask(robo, i,
+                                      collisionFilterGroup=0,
+                                      collisionFilterMask=0,
+                                      physicsClientId=client)
+
+    # Limiti IK estratti dal robot
     lower_limits, upper_limits, joint_ranges = [], [], []
-    for j in arm_joints:
+    for j in actual_arm_joints:
         info = p.getJointInfo(robo, j, physicsClientId=client)
         lower_limits.append(info[8])
         upper_limits.append(info[9])
@@ -103,28 +221,35 @@ def worker_task(args):
 
     for (i_map, j_map, k_map) in point_chunk:
 
-        target_position = list(np.array([i_map, j_map, k_map]))
+        target_position = [i_map, j_map, k_map]
         desired_pos = list(np.array(target_position) + np.array(APPROACH_OFFSET))
 
-        # IK base
-        for ji, jid in enumerate(arm_joints):
-            p.resetJointState(robo, jid, REST_POSE[ji], physicsClientId=client)
+        # Reset alla rest pose — seed consistente per l'IK
+        for ji, jid in enumerate(actual_arm_joints):
+            p.resetJointState(robo, jid, actual_rest_pose[ji],
+                              physicsClientId=client)
 
-        ik_ref = p.calculateInverseKinematics(
-            robo, EE_LINK_INDEX, desired_pos,
-            lowerLimits=lower_limits, upperLimits=upper_limits,
-            jointRanges=joint_ranges, restPoses=REST_POSE,
-            maxNumIterations=100,
+        # IK senza orientamento — trova la posa di riferimento naturale
+        ik_angles = p.calculateInverseKinematics(
+            robo, actual_ee_index, desired_pos,
+            lowerLimits=lower_limits,
+            upperLimits=upper_limits,
+            jointRanges=joint_ranges,
+            restPoses=actual_rest_pose,
+            maxNumIterations=200,
+            residualThreshold=1e-5,
             physicsClientId=client
         )
 
-        for jid in arm_joints:
-            p.resetJointState(robo, jid, ik_ref[jid], physicsClientId=client)
+        for ji, jid in enumerate(actual_arm_joints):
+            p.resetJointState(robo, jid, ik_angles[ji], physicsClientId=client)
+
+        p.stepSimulation(physicsClientId=client)
 
         ee_ref_orientation = p.getLinkState(
-            robo, EE_LINK_INDEX, physicsClientId=client)[5]
+            robo, actual_ee_index, physicsClientId=client)[5]
 
-        # rotazioni
+        # Campionamento rotazioni
         for sampleX in xSamples:
             for sampleY in ySamples:
                 for sampleZ in zSamples:
@@ -132,52 +257,53 @@ def worker_task(args):
                     q_target = local_axes_to_quaternion(
                         ee_ref_orientation, sampleX, sampleY, sampleZ)
 
-                    for ji, jid in enumerate(arm_joints):
-                        p.resetJointState(robo, jid, REST_POSE[ji],
+                    # Reset alla rest pose prima di ogni IK con orientamento
+                    for ji, jid in enumerate(actual_arm_joints):
+                        p.resetJointState(robo, jid, actual_rest_pose[ji],
                                           physicsClientId=client)
 
                     ik_angles = p.calculateInverseKinematics(
-                        robo, EE_LINK_INDEX, desired_pos,
+                        robo, actual_ee_index, desired_pos,
                         targetOrientation=q_target,
-                        lowerLimits=lower_limits, upperLimits=upper_limits,
-                        jointRanges=joint_ranges, restPoses=REST_POSE,
-                        maxNumIterations=100,
+                        lowerLimits=lower_limits,
+                        upperLimits=upper_limits,
+                        jointRanges=joint_ranges,
+                        restPoses=actual_rest_pose,
+                        maxNumIterations=200,
+                        residualThreshold=1e-5,
                         physicsClientId=client
                     )
 
-                    for jid in arm_joints:
-                        p.resetJointState(robo, jid, ik_angles[jid],
+                    for ji, jid in enumerate(actual_arm_joints):
+                        p.resetJointState(robo, jid, ik_angles[ji],
                                           physicsClientId=client)
 
-                    ee_pos = p.getLinkState(
-                        robo, EE_LINK_INDEX, physicsClientId=client)[4]
+                    p.stepSimulation(physicsClientId=client)
+
+                    # Verifica IK
+                    ee_pos = p.getLinkState(robo, actual_ee_index,
+                                            physicsClientId=client)[4]
 
                     ik_error = math.sqrt(
                         sum((ee_pos[i] - desired_pos[i])**2 for i in range(3)))
 
                     if ik_error < THRESHOLD:
                         results.append([
-                            *desired_pos,
-                            *q_target,
-                            *[ik_angles[j] for j in arm_joints]
+                            *desired_pos,                               # x, y, z target
+                            *q_target,                                  # qx, qy, qz, qw
+                            *[ik_angles[ji] for ji in range(len(actual_arm_joints))]  # j0..jN
                         ])
 
         processed_points += 1
 
     p.disconnect(client)
-
-    return processed_points, results
+    return chunk_id, processed_points, results
 
 
 # ─────────────────────────────────────────────
 #  MAIN
 # ─────────────────────────────────────────────
 def main():
-    import multiprocessing as mp
-    from tqdm import tqdm
-    import os, csv
-    import argparse
-
     parser = argparse.ArgumentParser()
     parser.add_argument("--workers", type=int, default=None,
                         help="Numero di processi (default: cpu_count - 1)")
@@ -185,9 +311,53 @@ def main():
 
     mp.set_start_method("spawn", force=True)
 
-    # --- setup identico al tuo ---
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
+    # Risolvi ARM_JOINTS e REST_POSE: se vuoti, carica temporaneamente il robot
+    # nel processo principale per dedurli, poi passa i valori risolti ai worker
+    arm_joints    = ROBOT_CONFIG["arm_joints"]
+    rest_pose     = ROBOT_CONFIG["rest_pose"]
+    ee_link_index = ROBOT_CONFIG["ee_link_index"] or None
+
+    if arm_joints == [] or rest_pose == [] or \
+       len(rest_pose) != len(arm_joints) or ee_link_index is None:
+
+        print("Deduzione ARM_JOINTS / REST_POSE dal robot...")
+        client_tmp = p.connect(p.DIRECT)
+        p.setAdditionalSearchPath(pybullet_data.getDataPath(),
+                                  physicsClientId=client_tmp)
+        if ROBOT_CONFIG["isLocalpath"]:
+            urdf_tmp = os.path.join(script_dir, ROBOT_CONFIG["urdf_path"])
+        else:
+            urdf_tmp = ROBOT_CONFIG["urdf_path"]
+
+        robo_tmp = p.loadURDF(urdf_tmp, useFixedBase=True,
+                              physicsClientId=client_tmp)
+
+        if arm_joints == []:
+            arm_joints = get_model_joints(robo_tmp, client_tmp)
+            print(f"  Arm joints dedotti: {arm_joints}")
+
+        if rest_pose == [] or len(rest_pose) != len(arm_joints):
+            rest_pose = [0] * len(arm_joints)
+            print(f"  REST_POSE impostata a zero per {len(arm_joints)} giunti.")
+
+        if ee_link_index is None:
+            ee_link_index = arm_joints[-1]
+            print(f"  EE_LINK_INDEX impostato a {ee_link_index}")
+
+        print("=== ALL JOINTS ===")
+        for i in range(p.getNumJoints(robo_tmp, physicsClientId=client_tmp)):
+            info = p.getJointInfo(robo_tmp, i, physicsClientId=client_tmp)
+            jname = info[1].decode()
+            jtype = info[2]
+            lname = info[12].decode()
+            type_str = {0: "REVOLUTE", 1: "PRISMATIC", 4: "FIXED"}.get(jtype, str(jtype))
+            print(f"  [{i}] {jname} ({type_str}) → link: {lname}")
+
+        p.disconnect(client_tmp)
+
+    # Campionamento
     xSamples = make_samples(XSAMPLES, XRANGE/2)
     ySamples = make_samples(YSAMPLES, YRANGE/2)
     zSamples = make_samples(ZSAMPLES, ZRANGE/2)
@@ -196,246 +366,103 @@ def main():
     jSteps = make_samples(MAPSTEPS[1], MAPSIZE[1]/2)
     kSteps = make_samples(MAPSTEPS[2], MAPSIZE[2]/2)
 
+    # MAPOFFSET applicato qui — i worker ricevono già le coordinate assolute
     point_combinations = [
         (i + MAPOFFSET[0], j + MAPOFFSET[1], k + MAPOFFSET[2])
         for i in iSteps for j in jSteps for k in kSteps
     ]
-
     total_points = len(point_combinations)
 
-    REST_POSE     = [0, 0.5, -0.5, 0.5, 0]
-    arm_joints    = [0, 1, 2, 3, 4]
-    EE_LINK_INDEX = 5
-
     config = (
-        THRESHOLD, APPROACH_OFFSET, REST_POSE, arm_joints,
-        EE_LINK_INDEX, xSamples, ySamples, zSamples,
-        roboPos, script_dir
+        THRESHOLD, APPROACH_OFFSET, rest_pose, arm_joints,
+        ee_link_index, xSamples, ySamples, zSamples,
+        roboPos, script_dir, ROBOT_CONFIG
     )
 
-    # --- chunk piccoli (CRUCIALE) ---
-    chunk_size = 50   # 🔥 puoi sperimentare (20–200)
+    chunk_size = 100
     chunks = [
         point_combinations[i:i+chunk_size]
         for i in range(0, total_points, chunk_size)
     ]
 
-    if args.workers is not None:
-        n_workers = args.workers
-    else:
-        n_workers = max(1, mp.cpu_count() - 1)
+    n_workers = args.workers if args.workers is not None \
+                else max(1, mp.cpu_count() - 1)
 
     print(f"{n_workers} worker | {len(chunks)} chunk | {total_points} punti")
 
     csv_path = os.path.join(script_dir, "dataset.csv")
+    log_path = os.path.join(script_dir, "dataset.log")
 
-    header = (
-        ["target_x", "target_y", "target_z",
-         "qx","qy","qz","qw"]
-        + [f"joint_{i}" for i in range(len(arm_joints))]
-    )
+    header_row = [
+        "target_x", "target_y", "target_z",
+        "hand_quat_qx", "hand_quat_qy", "hand_quat_qz", "hand_quat_qw"
+    ] + [f"joint_{i}" for i in range(len(arm_joints))]
 
     total_saved = 0
+    start_time  = datetime.now()
 
-    with mp.Pool(n_workers) as pool, \
-         open(csv_path, "w", newline="") as f, \
-         tqdm(total=total_points, desc="Punti", unit="pt") as pbar:
+    args_iter = [(i, chunk, config) for i, chunk in enumerate(chunks)]
 
-        writer = csv.writer(f)
-        writer.writerow(header)
+    log = init_log(log_path, n_workers, len(chunks), total_points,
+                   arm_joints, ee_link_index, rest_pose)
 
-        args_iter = [
-            (i, chunk, config)
-            for i, chunk in enumerate(chunks)
-        ]
+    def setup_signal_handlers(pool):
+        pgid = os.getpgid(os.getpid())  # process group id del padre
 
-        for processed_points, results in pool.imap_unordered(worker_task, args_iter):
+        def handle_termination(signum, frame):
+            print(f"\nSegnale {signum} ricevuto, termino tutti i processi...")
+            pool.terminate()
+            pool.join()
+            # scrivi sul log prima di uscire
+            log_summary(log, total_saved, total_points,
+                        (datetime.now() - start_time).total_seconds())
+            log.write("  *** Terminato da segnale esterno ***\n")
+            log.close()
+            os.killpg(pgid, signal.SIGKILL)
 
-            # aggiorna progress
-            pbar.update(processed_points)
-
-            # scrivi risultati
-            for row in results:
-                writer.writerow(row)
-
-            total_saved += len(results)
-            pbar.set_postfix({"saved": total_saved}, refresh=False)
-
-    print(f"\nDataset salvato: {csv_path} ({total_saved} righe)")
-
-# ─────────────────────────────────────────────
-#  SINGLE-PROCESS (modalità GUI)
-# ─────────────────────────────────────────────
-def _run_single(config, point_combinations, script_dir, args):
-    """Modalità GUI: singolo processo con debug visivi, identica al main originale."""
-    (THRESHOLD, APPROACH_OFFSET, REST_POSE, arm_joints,
-     EE_LINK_INDEX, xSamples, ySamples, zSamples,
-     roboPos, script_dir) = config
-
-    p.connect(p.GUI)
-    p.resetSimulation()
-    p.setGravity(0, 0, 0)
-    p.setAdditionalSearchPath(pybullet_data.getDataPath())
-
-    target = p.loadURDF("cube_small.urdf", basePosition=[1,0.75,0.1],
-                        useFixedBase=True, globalScaling=0.1)
-    p.changeVisualShape(target, -1, rgbaColor=[1,0,0,1])
-
-    urdf_path = os.path.join(script_dir, "xarm_model/urdf/xarm_fixed.urdf")
-    robo = p.loadURDF(urdf_path, basePosition=roboPos,
-                      useFixedBase=True, globalScaling=1.0)
-
-    lower_limits, upper_limits, joint_ranges = [], [], []
-    for j in arm_joints:
-        info = p.getJointInfo(robo, j)
-        lower_limits.append(info[8])
-        upper_limits.append(info[9])
-        joint_ranges.append(info[9] - info[8])
-
-    # Debug visivi
-    Q_FIX = p.getQuaternionFromEuler([0, 0, 0])
-    ear_offset = 0.015
-
-    debug_cylinder = p.createMultiBody(0,
-        p.createVisualShape(p.GEOM_CYLINDER, radius=0.015, length=0.10,
-            rgbaColor=[0,0.5,1,0.35],
-            visualFramePosition=[0,0,-0.05],
-            visualFrameOrientation=Q_FIX))
-    debug_tip = p.createMultiBody(0,
-        p.createVisualShape(p.GEOM_SPHERE, radius=0.015,
-            rgbaColor=[0.6,0.1,0.6,0.6]))
-    debug_ear_left = p.createMultiBody(0,
-        p.createVisualShape(p.GEOM_CYLINDER, radius=0.006, length=0.01,
-            rgbaColor=[1,0.3,0,0.5],
-            visualFrameOrientation=p.getQuaternionFromEuler([0,math.pi/2,0])))
-    debug_ear_right = p.createMultiBody(0,
-        p.createVisualShape(p.GEOM_CYLINDER, radius=0.006, length=0.01,
-            rgbaColor=[0.2,0.85,0.1,0.5],
-            visualFrameOrientation=p.getQuaternionFromEuler([0,math.pi/2,0])))
-
-    # Volume di campionamento
-    half   = np.array(MAPSIZE) / 2
-    center = np.array(MAPOFFSET)
-    p.createMultiBody(0, p.createVisualShape(p.GEOM_BOX,
-        halfExtents=half, rgbaColor=[1,0.5,0,0.08]),
-        basePosition=center.tolist())
-    corners = [center + np.array([sx,sy,sz])*half
-               for sx in [-1,1] for sy in [-1,1] for sz in [-1,1]]
-    for a,b in [(0,1),(2,3),(4,5),(6,7),(0,2),(1,3),(4,6),(5,7),(0,4),(1,5),(2,6),(3,7)]:
-        p.addUserDebugLine(corners[a].tolist(), corners[b].tolist(),
-                           [1,0.5,0], lineWidth=1.5, lifeTime=0)
-
-    csv_path = os.path.join(script_dir, "dataset.csv")
-    points_added = 0
-    debug_line_id = None
-    debug_text_id = None
+        signal.signal(signal.SIGTERM, handle_termination)
+        signal.signal(signal.SIGINT,  handle_termination)
 
     try:
-        with open(csv_path, "w", newline="") as csv_file:
+        with mp.Pool(n_workers) as pool, \
+             open(csv_path, "w", newline="") as csv_file, \
+             tqdm(total=total_points, desc="Punti", unit="pt",
+                  bar_format="{l_bar}{bar:25}{r_bar}{postfix}") as pbar:
+            
+            setup_signal_handlers(pool)
+
             writer = csv.writer(csv_file)
-            writer.writerow(
-                ["target_x","target_y","target_z",
-                 "hand_quat_qx","hand_quat_qy","hand_quat_qz","hand_quat_qw"]
-                + [f"joint_{i}" for i in range(len(arm_joints))]
-            )
+            writer.writerow(header_row)
 
-            for i_map, j_map, k_map in (pbar := tqdm(
-                    point_combinations, desc="Punti", unit="pt",
-                    bar_format="{l_bar}{bar:25}{r_bar}{postfix}")):
+            for chunk_id, processed_points, results in pool.imap_unordered(worker_task, args_iter):
+                pbar.update(processed_points)
 
-                target_position = list(np.array([i_map, j_map, k_map]))
-                p.resetBasePositionAndOrientation(target, target_position, [0,0,0,1])
-                desired_pos = list(np.array(target_position) + np.array(APPROACH_OFFSET))
+                for row in results:
+                    writer.writerow(row)
 
-                for ji, jid in enumerate(arm_joints):
-                    p.resetJointState(robo, jid, REST_POSE[ji])
-                ik_ref = p.calculateInverseKinematics(
-                    robo, EE_LINK_INDEX, desired_pos,
-                    lowerLimits=lower_limits, upperLimits=upper_limits,
-                    jointRanges=joint_ranges, restPoses=REST_POSE,
-                    maxNumIterations=200, residualThreshold=1e-5)
-                for jid in arm_joints:
-                    p.resetJointState(robo, jid, ik_ref[jid])
-                p.stepSimulation()
+                total_saved += len(results)
+                pbar.set_postfix({"saved": total_saved}, refresh=False)
 
-                ee_ref_orientation = p.getLinkState(robo, EE_LINK_INDEX)[5]
+                log_worker(log, chunk_id, processed_points, len(results))
 
-                for sampleX in xSamples:
-                    for sampleY in ySamples:
-                        for sampleZ in zSamples:
-                            q_target = local_axes_to_quaternion(
-                                ee_ref_orientation, sampleX, sampleY, sampleZ)
-
-                            # Debug visivi
-                            p.resetBasePositionAndOrientation(
-                                debug_cylinder, desired_pos, q_target)
-                            p.resetBasePositionAndOrientation(
-                                debug_tip, desired_pos, [0,0,0,1])
-                            R      = quaternion_to_matrix(q_target)
-                            x_axis = R[:, 0]
-                            mid    = np.array(desired_pos)
-                            p.resetBasePositionAndOrientation(
-                                debug_ear_left,
-                                (mid + x_axis*ear_offset).tolist(), q_target)
-                            p.resetBasePositionAndOrientation(
-                                debug_ear_right,
-                                (mid - x_axis*ear_offset).tolist(), q_target)
-
-                            p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 0)
-                            for ji, jid in enumerate(arm_joints):
-                                p.resetJointState(robo, jid, REST_POSE[ji])
-                            ik_angles = p.calculateInverseKinematics(
-                                robo, EE_LINK_INDEX, desired_pos,
-                                targetOrientation=q_target,
-                                lowerLimits=lower_limits, upperLimits=upper_limits,
-                                jointRanges=joint_ranges, restPoses=REST_POSE,
-                                maxNumIterations=200, residualThreshold=1e-5)
-                            for jid in arm_joints:
-                                p.resetJointState(robo, jid, ik_angles[jid])
-                            p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 1)
-                            p.stepSimulation()
-
-                            ee_pos = p.getLinkState(robo, EE_LINK_INDEX)[4]
-                            ik_error = math.sqrt(
-                                sum((ee_pos[i]-desired_pos[i])**2 for i in range(3)))
-                            dist_to_cube = math.sqrt(
-                                sum((ee_pos[i]-target_position[i])**2 for i in range(3)))
-
-                            color = [0,1,0] if ik_error < THRESHOLD else [1,0,0]
-                            mid_pos = [(ee_pos[i]+target_position[i])/2 for i in range(3)]
-                            mid_pos[2] += 0.05
-                            label = f"{dist_to_cube*100:.1f} cm"
-
-                            if all(math.isfinite(v) for v in list(ee_pos)+target_position+mid_pos):
-                                if debug_line_id is None:
-                                    debug_line_id = p.addUserDebugLine(
-                                        ee_pos, target_position, color, lineWidth=2, lifeTime=0)
-                                    debug_text_id = p.addUserDebugText(
-                                        label, mid_pos, color, textSize=1.2, lifeTime=0)
-                                else:
-                                    debug_line_id = p.addUserDebugLine(
-                                        ee_pos, target_position, color, lineWidth=2, lifeTime=0,
-                                        replaceItemUniqueId=debug_line_id)
-                                    debug_text_id = p.addUserDebugText(
-                                        label, mid_pos, color, textSize=1.2, lifeTime=0,
-                                        replaceItemUniqueId=debug_text_id)
-
-                            if ik_error < THRESHOLD:
-                                writer.writerow([
-                                    *desired_pos, *q_target,
-                                    *[ik_angles[j] for j in arm_joints]
-                                ])
-                                points_added += 1
-                                pbar.set_postfix({"saved": points_added}, refresh=False)
+                # Flush CSV periodico ogni ~1000 righe salvate
+                if total_saved % 1000 < len(results):
+                    csv_file.flush()
 
     except KeyboardInterrupt:
-        print("Interrotto.")
+        print("\nInterrotto dall'utente.")
+        log.write("  *** Interrotto dall'utente ***\n")
     except Exception as e:
-        import traceback; traceback.print_exc()
+        print(f"Errore: {e}")
+        import traceback
+        traceback.print_exc()
+        log.write(f"  *** ERRORE: {e} ***\n")
     finally:
-        print(f"Dataset salvato: {csv_path}  ({points_added} righe)")
-        if p.isConnected():
-            p.disconnect()
+        elapsed = (datetime.now() - start_time).total_seconds()
+        log_summary(log, total_saved, total_points, elapsed)
+        log.close()
+        print(f"\nDataset salvato: {csv_path} ({total_saved} righe)")
+        print(f"Log salvato    : {log_path}")
 
 
 if __name__ == "__main__":
