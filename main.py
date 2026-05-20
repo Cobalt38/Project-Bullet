@@ -34,7 +34,7 @@ biarmConfig = {
 }
 
 # --- CONFIGURAZIONE ROBOT ---
-ROBOT_CONFIG = pandaConfig
+ROBOT_CONFIG = biarmConfig
 
 REST_POSE = ROBOT_CONFIG["rest_pose"]
 ARM_JOINTS = ROBOT_CONFIG["arm_joints"]
@@ -45,8 +45,8 @@ roboPos = [0,0,0]
 THRESHOLD = 0.005  # max errore IK accettabile (in metri)
 APPROACH_OFFSET = [0,0,0]  # offset rispetto al target
 
-MAPSIZE = [1.2, 1.2, 0.6]      # dimensione del cubo di test (in metri)
-MAPSTEPS = [8, 8, 4]           # quanti step di offset testare lungo ogni asse 
+MAPSIZE = [0.8, 0.8, 0.6]      # dimensione del cubo di test (in metri)
+MAPSTEPS = [20, 20, 10]           # quanti step di offset testare lungo ogni asse 
 MAPOFFSET = [0, 0, 0.3]        # offset del centro del cubo rispetto alla base globale (in metri) 
 
 #ROTATION SAMPLES

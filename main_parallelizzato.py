@@ -48,11 +48,11 @@ THRESHOLD       = 0.01  # max errore IK accettabile (in metri) — se troppo bas
 APPROACH_OFFSET = [0, 0, 0]
 
 MAPSIZE   = [0.8, 0.8, 0.6] # dimensione del cubo di test (in metri)
-MAPSTEPS  = [80, 80, 12] # quanti step di offset testare lungo ogni asse 
+MAPSTEPS  = [20, 20, 10] # quanti step di offset testare lungo ogni asse 
 MAPOFFSET = [0, 0, 0.3] # offset del centro del cubo rispetto alla base globale (in metri) 
 
-XRANGE, XSAMPLES = math.pi/2, 45
-YRANGE, YSAMPLES = math.pi/2, 45
+XRANGE, XSAMPLES = math.pi,   45
+YRANGE, YSAMPLES = math.pi,   45
 ZRANGE, ZSAMPLES = math.pi*2, 36
 
 # ─────────────────────────────────────────────
