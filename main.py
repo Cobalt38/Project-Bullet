@@ -28,13 +28,21 @@ pandaConfig = {
 biarmConfig = {
     "rest_pose": [0, 0, 0, 1.2, 0, 0, 0],  # j4 ≥ 0, gomito leggermente flesso,  # lascia vuoto per dedurlo automaticamente dal robot
     "arm_joints": [],  # lascia vuoto per dedurlo automaticamente dal robot
-    "ee_link_index": 8,
+    "ee_link_index": 7,
     "isLocalpath": True,
     "urdf_path": "biarm_model/openarm.urdf"
 }
 
+rightarmConfig = {
+    "rest_pose": [0, 0, 0, 1.2, 0, 0, 0],  # j4 ≥ 0, gomito leggermente flesso,  # lascia vuoto per dedurlo automaticamente dal robot
+    "arm_joints": [],  # lascia vuoto per dedurlo automaticamente dal robot
+    "ee_link_index": 7,
+    "isLocalpath": True,
+    "urdf_path": "biarm_model/openarm_right.urdf"
+}
+
 # --- CONFIGURAZIONE ROBOT ---
-ROBOT_CONFIG = biarmConfig
+ROBOT_CONFIG = rightarmConfig
 
 REST_POSE = ROBOT_CONFIG["rest_pose"]
 ARM_JOINTS = ROBOT_CONFIG["arm_joints"]
@@ -45,9 +53,9 @@ roboPos = [0,0,0]
 THRESHOLD = 0.005  # max errore IK accettabile (in metri)
 APPROACH_OFFSET = [0,0,0]  # offset rispetto al target
 
-MAPSIZE = [0.8, 0.8, 0.6]      # dimensione del cubo di test (in metri)
-MAPSTEPS = [20, 20, 10]           # quanti step di offset testare lungo ogni asse 
-MAPOFFSET = [0, 0, 0.3]        # offset del centro del cubo rispetto alla base globale (in metri) 
+MAPSIZE = [0.8, 0.8, 1.0]      # dimensione del cubo di test (in metri)
+MAPSTEPS = [6, 6, 4]           # quanti step di offset testare lungo ogni asse 
+MAPOFFSET = [0, 0, 0.5]        # offset del centro del cubo rispetto alla base globale (in metri) 
 
 #ROTATION SAMPLES
 XRANGE, XSAMPLES = math.pi,   45

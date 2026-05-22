@@ -173,7 +173,16 @@ def worker_task(args):
      EE_LINK_INDEX, xSamples, ySamples, zSamples,
      roboPos, script_dir, robot_config) = config
 
-    client = p.connect(p.DIRECT)
+    client = p.connect(p.GUI)
+    for(i_map, j_map, k_map) in point_chunk:
+        pos = (i_map, j_map, k_map)
+        p.addUserDebugPoints(
+                        pointPositions=[pos],
+                        pointColorsRGB=[[1, 0.5, 0]],   # arancione
+                        pointSize=3,
+                        lifeTime=0
+                    )
+
     p.setGravity(0, 0, 0, physicsClientId=client)
     p.setAdditionalSearchPath(pybullet_data.getDataPath(), physicsClientId=client)
 
@@ -379,7 +388,7 @@ def main():
         roboPos, script_dir, ROBOT_CONFIG
     )
 
-    chunk_size = 100
+    chunk_size = 2000
     chunks = [
         point_combinations[i:i+chunk_size]
         for i in range(0, total_points, chunk_size)
@@ -433,7 +442,7 @@ def main():
 
             writer = csv.writer(csv_file)
             writer.writerow(header_row)
-
+            print(len(args_iter))
             for chunk_id, processed_points, results in pool.imap_unordered(worker_task, args_iter):
                 pbar.update(processed_points)
 
