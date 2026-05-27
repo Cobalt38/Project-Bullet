@@ -38,7 +38,15 @@ biarmConfig = {
     "urdf_path": "biarm_model/openarm.urdf"
 }
 
-ROBOT_CONFIG = biarmConfig
+openarmv2Config = {
+    "rest_pose": [0, 0, 0, 0, 0, 0, 0],
+    "arm_joints": [12, 13, 14, 15, 16, 17, 18],  # lascia vuoto per dedurlo automaticamente dal robot
+    "ee_link_index": 18,
+    "isLocalpath": True,
+    "urdf_path": "biarm_model/openarm_v2.urdf"
+}
+
+ROBOT_CONFIG = openarmv2Config
 
 # ─────────────────────────────────────────────
 #  PARAMETRI CAMPIONAMENTO
@@ -173,15 +181,15 @@ def worker_task(args):
      EE_LINK_INDEX, xSamples, ySamples, zSamples,
      roboPos, script_dir, robot_config) = config
 
-    client = p.connect(p.GUI)
-    for(i_map, j_map, k_map) in point_chunk:
-        pos = (i_map, j_map, k_map)
-        p.addUserDebugPoints(
-                        pointPositions=[pos],
-                        pointColorsRGB=[[1, 0.5, 0]],   # arancione
-                        pointSize=3,
-                        lifeTime=0
-                    )
+    client = p.connect(p.DIRECT)
+    # for(i_map, j_map, k_map) in point_chunk:
+    #     pos = (i_map, j_map, k_map)
+    #     p.addUserDebugPoints(
+    #                     pointPositions=[pos],
+    #                     pointColorsRGB=[[1, 0.5, 0]],   # arancione
+    #                     pointSize=3,
+    #                     lifeTime=0
+    #                 )
 
     p.setGravity(0, 0, 0, physicsClientId=client)
     p.setAdditionalSearchPath(pybullet_data.getDataPath(), physicsClientId=client)

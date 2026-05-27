@@ -5,9 +5,11 @@ import os
 import math
 import numpy as np
 
-URDF_PATH    = "biarm_model/openarm_right.urdf"
-ARM_JOINTS    = [2, 3, 4, 5, 6, 7, 8]   # openarm_joint1 … openarm_joint7
-EE_LINK_INDEX = 8                         # openarm_joint7 → openarm_link7
+URDF_PATH    = "biarm_model/openarm_v2.urdf"
+# ARM_JOINTS    = [2, 3, 4, 5, 6, 7, 8]   # openarm_joint1 … openarm_joint7
+# EE_LINK_INDEX = 8                         # openarm_joint7 → openarm_link7
+ARM_JOINTS            = [12, 13, 14, 15, 16, 17, 18] 
+EE_LINK_INDEX         = 18 
 ROBOPOS      = [0, 0, 0]
 MAPSIZE      = [0.8, 0.8, 0.6]
 MAPOFFSET    = [0, 0, 0.3]

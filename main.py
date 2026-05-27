@@ -41,8 +41,16 @@ rightarmConfig = {
     "urdf_path": "biarm_model/openarm_right.urdf"
 }
 
+openarmv2Config = {
+    "rest_pose": [0, 0, 0, 0, 0, 0, 0],
+    "arm_joints": [12, 13, 14, 15, 16, 17, 18],  # lascia vuoto per dedurlo automaticamente dal robot
+    "ee_link_index": 18,
+    "isLocalpath": True,
+    "urdf_path": "biarm_model/openarm_v2.urdf"
+}
+
 # --- CONFIGURAZIONE ROBOT ---
-ROBOT_CONFIG = rightarmConfig
+ROBOT_CONFIG = openarmv2Config
 
 REST_POSE = ROBOT_CONFIG["rest_pose"]
 ARM_JOINTS = ROBOT_CONFIG["arm_joints"]

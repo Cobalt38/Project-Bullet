@@ -4,7 +4,8 @@ __pycache__/
 *$py.class
 
 marioenv/
-dataset.csv
+.venv
+*.csv
 csv_belli/*.csv
 csv_belli/marioenv
 
