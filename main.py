@@ -38,7 +38,8 @@ openarmRightConfig = {
     "arm_joints": [i for i in range(2, 9)],  # 2..8, lascia vuoto per dedurlo automaticamente dal robot
     "ee_link_index": 10,  # (TCP)
     "isLocalpath": True,
-    "urdf_path": "biarm_model/openarm_right.urdf"
+    "urdf_path": "biarm_model/openarm_right.urdf",
+    "max_reach": 0.7  # stima della lunghezza massima del braccio, usata per filtrare i target troppo lontani
 }
 
 openarmv2rightConfig = {
@@ -61,7 +62,7 @@ roboPos = [0,0,0]
 THRESHOLD = 0.005  # max errore IK accettabile (in metri)
 APPROACH_OFFSET = [0,0,0]  # offset rispetto al target
 
-MAPSIZE = [0.6, 0.5, 1.0]      # dimensione del cubo di test (in metri)
+MAPSIZE = [0.8, 0.6, 1.0]      # dimensione del cubo di test (in metri)
 MAPSTEPS = [8, 8, 8]           # quanti step di offset testare lungo ogni asse 
 MAPOFFSET = [0, -0.3, 0.6]     # offset del centro del cubo rispetto alla base globale (in metri) 
 
@@ -201,6 +202,24 @@ for j in ARM_JOINTS:
     lower_limits.append(info[8])
     upper_limits.append(info[9])
     joint_ranges.append(info[9] - info[8])
+
+
+def estimate_max_reach(robot_id):
+    """Stima la lunghezza massima del braccio usando le combinazioni estreme dei limiti di giunto."""
+    def fmt_point(pt):
+        return "(" + ", ".join(f"{v:.3f}" for v in pt) + ")"
+    base_pos = p.getLinkState(robot_id, ARM_JOINTS[0])[4]  # posizione del link base (assumendo che sia il primo)
+    print(f"Base position: {fmt_point(base_pos)}")
+    ee_pos_before = p.getLinkState(robot_id, EE_LINK_INDEX)[4]
+    print(f"EE position: {fmt_point(ee_pos_before)}")
+    for j in ARM_JOINTS:
+        p.resetJointState(robot_id, j, 0) # max estensione possibile stimata
+    ee_pos = p.getLinkState(robot_id, EE_LINK_INDEX)[4]
+    dist = math.dist(base_pos, ee_pos)
+    return dist
+
+max_reach = ROBOT_CONFIG.get("max_reach", estimate_max_reach(robo))
+print(f"Estimated max reach: {max_reach:.3f} m")
 
 print("=== ALL JOINTS ===")
 for i in range(p.getNumJoints(robo)):
@@ -355,7 +374,13 @@ point_combinations = [(i,j,k) for i in iSteps for j in jSteps for k in kSteps]
 try:
     for i_map, j_map, k_map in (pbar := tqdm(point_combinations, desc="Punti", unit="pt", bar_format="{l_bar}{bar:25}{r_bar}{postfix}")):
         
-        target_position = list(np.array([i_map, j_map, k_map]) + np.array(MAPOFFSET))  ##[i_map + MAPOFFSET[0], j_map + MAPOFFSET[1], k_map + MAPOFFSET[2]] 
+        target_position = list(np.array([i_map, j_map, k_map]) + np.array(MAPOFFSET))  ##[i_map + MAPOFFSET[0], j_map + MAPOFFSET[1], k_map + MAPOFFSET[2]]
+        distance_to_target = math.dist(p.getLinkState(robo, ARM_JOINTS[0])[4], target_position)  # distanza dal base link del robot al target
+        
+        print(f"\nDistance to target: {distance_to_target}, Max reach: {max_reach*1.1}")
+        if distance_to_target > max_reach*1.1:
+            # Se il punto è troppo lontano, salta per risparmiare tempo (opzionale)
+            continue
         #print(f"\n--- Target position: ({i_map:.2f}, {j_map:.2f}, {k_map:.2f}) ---")
         p.resetBasePositionAndOrientation(target, target_position, [0, 0, 0, 1])
         desired_pos = list(np.array(target_position) + np.array(APPROACH_OFFSET))
@@ -427,8 +452,8 @@ try:
                     
                     # Reset alla rest pose PRIMA di calcolare l'IK
                     # così il seed è sempre consistente e l'IK non diverge
-                    for ji, joint_id in enumerate(ARM_JOINTS):
-                        p.resetJointState(robo, joint_id, REST_POSE[ji])
+                    # for ji, joint_id in enumerate(ARM_JOINTS):
+                    #     p.resetJointState(robo, joint_id, REST_POSE[ji])
 
                     ik_angles = p.calculateInverseKinematics(
                         bodyUniqueId=robo,
@@ -489,7 +514,7 @@ try:
                         ])
                         points_added += 1
                         pbar.set_postfix({"saved": points_added}, refresh=False)
-                sleep(0.01)  # rallenta un po' per vedere meglio i debug (opzionale)        
+                sleep(0.05)  # rallenta un po' per vedere meglio i debug (opzionale)        
 except KeyboardInterrupt:
     print("Interrotto dall'utente.")
 except Exception as e:

@@ -39,11 +39,12 @@ biarmConfig = {
 }
 
 openarmRightConfig = {
-    "rest_pose": [0, 0, 0, 0, 0, 0, 0],
+    "rest_pose": [0, 0, 0, 1.2, 0, 0, 0],
     "arm_joints": [i for i in range(2, 9)],  # 2..8, lascia vuoto per dedurlo automaticamente dal robot
-    "ee_link_index": 9,
+    "ee_link_index": 10,  # (TCP)
     "isLocalpath": True,
-    "urdf_path": "biarm_model/openarm_right.urdf"
+    "urdf_path": "biarm_model/openarm_right.urdf",
+    "max_reach": 0.8  # stima della lunghezza massima del braccio, usata per filtrare i target troppo lontani
 }
 
 openarmv2rightConfig = {
@@ -133,6 +134,14 @@ def get_model_joints(robot_id, client):
         if joint_info[2] == 0:  # revolute
             controllable_joints.append(i)
     return controllable_joints
+
+def estimate_max_reach(robot_id, ee_link_index, arm_joints):
+    """Stima la lunghezza massima del braccio usando le combinazioni estreme dei limiti di giunto."""
+    base_pos = p.getLinkState(robot_id, arm_joints[0])[4]  # posizione del link base (assumendo che sia il primo)
+    for j in arm_joints:
+        p.resetJointState(robot_id, j, 0) # max estensione possibile stimata
+    ee_pos = p.getLinkState(robot_id, ee_link_index)[4]
+    return math.dist(base_pos, ee_pos) * 1.5  # moltiplica per 1.5 per avere un margine di sicurezza (da tarare in base al robot)
 
 # ─────────────────────────────────────────────
 #  LOGGING
@@ -244,10 +253,15 @@ def worker_task(args):
     results = []
     processed_points = 0
 
+    max_reach = robot_config.get("max_reach", estimate_max_reach(robo, actual_ee_index, actual_arm_joints))
+
     for (i_map, j_map, k_map) in point_chunk:
 
         target_position = [i_map, j_map, k_map]
         desired_pos = list(np.array(target_position) + np.array(APPROACH_OFFSET))
+
+        if math.dist(p.getLinkState(robo, actual_arm_joints[0], physicsClientId=client)[4], desired_pos) > max_reach*1.05:
+            continue
 
         # Reset alla rest pose — seed consistente per l'IK
         for ji, jid in enumerate(actual_arm_joints):
@@ -283,9 +297,9 @@ def worker_task(args):
                         ee_ref_orientation, sampleX, sampleY, sampleZ)
 
                     # Reset alla rest pose prima di ogni IK con orientamento
-                    for ji, jid in enumerate(actual_arm_joints):
-                        p.resetJointState(robo, jid, actual_rest_pose[ji],
-                                          physicsClientId=client)
+                    # for ji, jid in enumerate(actual_arm_joints):
+                    #     p.resetJointState(robo, jid, actual_rest_pose[ji],
+                    #                       physicsClientId=client)
 
                     ik_angles = p.calculateInverseKinematics(
                         robo, actual_ee_index, desired_pos,
@@ -343,6 +357,7 @@ def main():
     arm_joints    = ROBOT_CONFIG["arm_joints"]
     rest_pose     = ROBOT_CONFIG["rest_pose"]
     ee_link_index = ROBOT_CONFIG["ee_link_index"] or None
+    
 
     if arm_joints == [] or rest_pose == [] or \
        len(rest_pose) != len(arm_joints) or ee_link_index is None:
@@ -404,7 +419,7 @@ def main():
         roboPos, script_dir, ROBOT_CONFIG
     )
 
-    chunk_size = 2000
+    chunk_size = 100
     chunks = [
         point_combinations[i:i+chunk_size]
         for i in range(0, total_points, chunk_size)
@@ -416,7 +431,7 @@ def main():
     print(f"{n_workers} worker | {len(chunks)} chunk | {total_points} punti")
 
     csv_path = os.path.join(script_dir, "dataset.csv")
-    log_path = os.path.join(script_dir, "dataset.log")
+    log_path = os.path.join(script_dir, "capture.log")
 
     header_row = [
         "target_x", "target_y", "target_z",

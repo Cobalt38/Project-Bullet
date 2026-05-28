@@ -19,9 +19,19 @@ RIGHT_BASE_RPY         = [1.5708, 0.0, 0.0]              # rpy del giunto di mon
 _robot = None
 
 _joint1 = _joint2 = _joint3 = _joint4 = _joint5 = _joint6 = _joint7 = None
+
+calc_dist = None
+
 lower_limits = []
 upper_limits = []
 joint_ranges = []
+
+def calculate_distance():
+    ee_pos = p.getLinkState(_robot, EE_LINK_INDEX)[4]
+    first_joint_pos = p.getLinkState(_robot, ARM_JOINTS[0])[4]
+    dist = math.dist(ee_pos, first_joint_pos)
+    print(f"Distance from EE to first joint: {dist:.3f} m")
+
 
 def diagnose_robot():
     """Stampa tutti i joint del robot per trovare gli indici corretti."""
@@ -34,7 +44,7 @@ def diagnose_robot():
 
 def setup():
     print("Setting up simulation...")
-    global _robot, _joint1, _joint2, _joint3, _joint4, _joint5, _joint6, _joint7, lower_limits, upper_limits, joint_ranges
+    global _robot, _joint1, _joint2, _joint3, _joint4, _joint5, _joint6, _joint7, lower_limits, upper_limits, joint_ranges, calc_dist
     p.connect(p.GUI)
     p.resetSimulation()
     p.setAdditionalSearchPath(pybullet_data.getDataPath())
@@ -54,7 +64,7 @@ def setup():
         lower_limits.append(info[8])
         upper_limits.append(info[9])
         joint_ranges.append(info[9] - info[8])
-    
+    calc_dist = p.addUserDebugParameter("Calculate distance", 1, 0, 0)
     _joint1 = p.addUserDebugParameter(f"Joint 1 - {lower_limits[0]} to {upper_limits[0]}", lower_limits[0], upper_limits[0], 0)
     _joint2 = p.addUserDebugParameter(f"Joint 2 - {lower_limits[1]} to {upper_limits[1]}", lower_limits[1], upper_limits[1], 0)
     _joint3 = p.addUserDebugParameter(f"Joint 3 - {lower_limits[2]} to {upper_limits[2]}", lower_limits[2], upper_limits[2], 0)
@@ -68,7 +78,12 @@ if __name__ == "__main__":
         setup()
         diagnose_robot()
         print(p.getLinkState(_robot, EE_LINK_INDEX)[5])
+        last_calc = p.readUserDebugParameter(calc_dist)
         while True:
+            new_calc = p.readUserDebugParameter(calc_dist)
+            if new_calc != last_calc:
+                last_calc = new_calc
+                calculate_distance()
             targetJoints=[
                 p.readUserDebugParameter(_joint1),
                 p.readUserDebugParameter(_joint2),
