@@ -38,15 +38,23 @@ biarmConfig = {
     "urdf_path": "biarm_model/openarm.urdf"
 }
 
-openarmv2Config = {
+openarmRightConfig = {
     "rest_pose": [0, 0, 0, 0, 0, 0, 0],
-    "arm_joints": [12, 13, 14, 15, 16, 17, 18],  # lascia vuoto per dedurlo automaticamente dal robot
-    "ee_link_index": 18,
+    "arm_joints": [i for i in range(2, 9)],  # 2..8, lascia vuoto per dedurlo automaticamente dal robot
+    "ee_link_index": 9,
     "isLocalpath": True,
-    "urdf_path": "biarm_model/openarm_v2.urdf"
+    "urdf_path": "biarm_model/openarm_right.urdf"
 }
 
-ROBOT_CONFIG = openarmv2Config
+openarmv2rightConfig = {
+    "rest_pose": [0, 0, 0, 0, 0, 0, 0],
+    "arm_joints": [i for i in range(2, 9)],  # 2..8, lascia vuoto per dedurlo automaticamente dal robot
+    "ee_link_index": 8,
+    "isLocalpath": True,
+    "urdf_path": "biarm_model/openarm_v2_right.urdf"
+}
+
+ROBOT_CONFIG = openarmRightConfig
 
 # ─────────────────────────────────────────────
 #  PARAMETRI CAMPIONAMENTO
@@ -55,9 +63,9 @@ roboPos         = [0, 0, 0]
 THRESHOLD       = 0.01  # max errore IK accettabile (in metri) — se troppo basso, rischia di non trovare soluzioni per target lontani; se troppo alto, rischia di accettare soluzioni con errori visibili
 APPROACH_OFFSET = [0, 0, 0]
 
-MAPSIZE   = [0.8, 0.8, 0.6] # dimensione del cubo di test (in metri)
-MAPSTEPS  = [20, 20, 10] # quanti step di offset testare lungo ogni asse 
-MAPOFFSET = [0, 0, 0.3] # offset del centro del cubo rispetto alla base globale (in metri) 
+MAPSIZE = [0.6, 0.5, 1.0]      # dimensione del cubo di test (in metri)
+MAPSTEPS = [15, 15, 25]           # quanti step di offset testare lungo ogni asse 
+MAPOFFSET = [0, -0.3, 0.6]     # offset del centro del cubo rispetto alla base globale (in metri) 
 
 XRANGE, XSAMPLES = math.pi,   45
 YRANGE, YSAMPLES = math.pi,   45

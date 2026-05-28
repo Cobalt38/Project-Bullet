@@ -33,24 +33,24 @@ biarmConfig = {
     "urdf_path": "biarm_model/openarm.urdf"
 }
 
-rightarmConfig = {
-    "rest_pose": [0, 0, 0, 1.2, 0, 0, 0],  # j4 ≥ 0, gomito leggermente flesso,  # lascia vuoto per dedurlo automaticamente dal robot
-    "arm_joints": [],  # lascia vuoto per dedurlo automaticamente dal robot
-    "ee_link_index": 7,
+openarmRightConfig = {
+    "rest_pose": [0, 0, 0, 1.2, 0, 0, 0],
+    "arm_joints": [i for i in range(2, 9)],  # 2..8, lascia vuoto per dedurlo automaticamente dal robot
+    "ee_link_index": 10,  # (TCP)
     "isLocalpath": True,
     "urdf_path": "biarm_model/openarm_right.urdf"
 }
 
-openarmv2Config = {
-    "rest_pose": [0, 0, 0, 0, 0, 0, 0],
-    "arm_joints": [12, 13, 14, 15, 16, 17, 18],  # lascia vuoto per dedurlo automaticamente dal robot
-    "ee_link_index": 18,
-    "isLocalpath": True,
-    "urdf_path": "biarm_model/openarm_v2.urdf"
+openarmv2rightConfig = {
+    "rest_pose":      [0, 0, 0, 0, 0, 0, 0],
+    "arm_joints":     [2, 3, 4, 5, 6, 7, 8],
+    "ee_link_index":  9,   # ← era 8, ora punta al TCP
+    "isLocalpath":    True,
+    "urdf_path":      "biarm_model/openarm_v2_right.urdf"
 }
 
 # --- CONFIGURAZIONE ROBOT ---
-ROBOT_CONFIG = openarmv2Config
+ROBOT_CONFIG = openarmRightConfig
 
 REST_POSE = ROBOT_CONFIG["rest_pose"]
 ARM_JOINTS = ROBOT_CONFIG["arm_joints"]
@@ -61,14 +61,16 @@ roboPos = [0,0,0]
 THRESHOLD = 0.005  # max errore IK accettabile (in metri)
 APPROACH_OFFSET = [0,0,0]  # offset rispetto al target
 
-MAPSIZE = [0.8, 0.8, 1.0]      # dimensione del cubo di test (in metri)
-MAPSTEPS = [6, 6, 4]           # quanti step di offset testare lungo ogni asse 
-MAPOFFSET = [0, 0, 0.5]        # offset del centro del cubo rispetto alla base globale (in metri) 
+MAPSIZE = [0.6, 0.5, 1.0]      # dimensione del cubo di test (in metri)
+MAPSTEPS = [8, 8, 8]           # quanti step di offset testare lungo ogni asse 
+MAPOFFSET = [0, -0.3, 0.6]     # offset del centro del cubo rispetto alla base globale (in metri) 
 
 #ROTATION SAMPLES
-XRANGE, XSAMPLES = math.pi,   45
-YRANGE, YSAMPLES = math.pi,   45
-ZRANGE, ZSAMPLES = math.pi*2, 36
+XRANGE, XSAMPLES = math.pi,   15
+YRANGE, YSAMPLES = math.pi,   15
+ZRANGE, ZSAMPLES = math.pi*2, 6
+
+
 
 points_added = 0
 
@@ -169,6 +171,7 @@ if not args.headless:
 if ROBOT_CONFIG["isLocalpath"]:
      urdf_path = os.path.join(script_dir, URDF_PATH)
 else:     urdf_path = URDF_PATH
+print(f"Loading robot from URDF: {urdf_path}")
 robo = p.loadURDF(urdf_path, basePosition=roboPos, useFixedBase=True, globalScaling=1.0)
 
 # FIX CONFIGURAZIONE ROBOT (se necessario)
