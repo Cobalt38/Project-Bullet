@@ -7,7 +7,7 @@ import numpy as np
 
 URDF_PATH    = "biarm_model/openarm_right.urdf"
 ARM_JOINTS    = [i for i in range(2, 9)]   # openarm_joint2 … openarm_joint8
-EE_LINK_INDEX = 9
+EE_LINK_INDEX = 10
 # ARM_JOINTS            = [12, 13, 14, 15, 16, 17, 18] 
 # EE_LINK_INDEX         = 18 
 ROBOPOS      = [0, 0, 0]
@@ -20,6 +20,8 @@ _robot = None
 
 _joint1 = _joint2 = _joint3 = _joint4 = _joint5 = _joint6 = _joint7 = None
 
+palla1 = palla2 = palla3 = None
+
 calc_dist = None
 
 lower_limits = []
@@ -27,10 +29,14 @@ upper_limits = []
 joint_ranges = []
 
 def calculate_distance():
+    global palla1, palla2
     ee_pos = p.getLinkState(_robot, EE_LINK_INDEX)[4]
-    first_joint_pos = p.getLinkState(_robot, ARM_JOINTS[0])[4]
+    first_joint_pos = p.getLinkState(_robot, ARM_JOINTS[1])[4]
     dist = math.dist(ee_pos, first_joint_pos)
     print(f"Distance from EE to first joint: {dist:.3f} m")
+    palla1 = p.addUserDebugPoints(pointPositions=[ee_pos], pointColorsRGB=[[1, 0, 0]], pointSize=50, lifeTime=1)
+    palla2 = p.addUserDebugPoints(pointPositions=[first_joint_pos], pointColorsRGB=[[0, 1, 0]], pointSize=50, lifeTime=1)
+
 
 
 def diagnose_robot():
@@ -65,13 +71,17 @@ def setup():
         upper_limits.append(info[9])
         joint_ranges.append(info[9] - info[8])
     calc_dist = p.addUserDebugParameter("Calculate distance", 1, 0, 0)
-    _joint1 = p.addUserDebugParameter(f"Joint 1 - {lower_limits[0]} to {upper_limits[0]}", lower_limits[0], upper_limits[0], 0)
-    _joint2 = p.addUserDebugParameter(f"Joint 2 - {lower_limits[1]} to {upper_limits[1]}", lower_limits[1], upper_limits[1], 0)
-    _joint3 = p.addUserDebugParameter(f"Joint 3 - {lower_limits[2]} to {upper_limits[2]}", lower_limits[2], upper_limits[2], 0)
-    _joint4 = p.addUserDebugParameter(f"Joint 4 - {lower_limits[3]} to {upper_limits[3]}", lower_limits[3], upper_limits[3], 0)
-    _joint5 = p.addUserDebugParameter(f"Joint 5 - {lower_limits[4]} to {upper_limits[4]}", lower_limits[4], upper_limits[4], 0)
-    _joint6 = p.addUserDebugParameter(f"Joint 6 - {lower_limits[5]} to {upper_limits[5]}", lower_limits[5], upper_limits[5], 0)
-    _joint7 = p.addUserDebugParameter(f"Joint 7 - {lower_limits[6]} to {upper_limits[6]}", lower_limits[6], upper_limits[6], 0)
+    _joint1 = p.addUserDebugParameter(f"Joint 1", math.degrees(lower_limits[0]), math.degrees(upper_limits[0]), 0)
+    _joint2 = p.addUserDebugParameter(f"Joint 2", math.degrees(lower_limits[1]), math.degrees(upper_limits[1]), 90)
+    _joint3 = p.addUserDebugParameter(f"Joint 3", math.degrees(lower_limits[2]), math.degrees(upper_limits[2]), 0)
+    _joint4 = p.addUserDebugParameter(f"Joint 4", math.degrees(lower_limits[3]), math.degrees(upper_limits[3]), 0)
+    _joint5 = p.addUserDebugParameter(f"Joint 5", math.degrees(lower_limits[4]), math.degrees(upper_limits[4]), 0)
+    _joint6 = p.addUserDebugParameter(f"Joint 6", math.degrees(lower_limits[5]), math.degrees(upper_limits[5]), 0)
+    _joint7 = p.addUserDebugParameter(f"Joint 7", math.degrees(lower_limits[6]), math.degrees(upper_limits[6]), 0)
+
+    palla1 = p.addUserDebugPoints(pointPositions=[(0, 0, 0)], pointColorsRGB=[[1, 0, 0]], pointSize=10, lifeTime=0)
+    palla2 = p.addUserDebugPoints(pointPositions=[(0, 0, 0)], pointColorsRGB=[[0, 1, 0]], pointSize=10, lifeTime=0)
+    palla3 = p.addUserDebugPoints(pointPositions=[(0, 0, 0)], pointColorsRGB=[[0, 0, 1]], pointSize=10, lifeTime=0)
 
 if __name__ == "__main__":
     try:
@@ -94,7 +104,7 @@ if __name__ == "__main__":
                 p.readUserDebugParameter(_joint7)
             ]
             for joint_idx, val in zip(ARM_JOINTS, targetJoints):
-                p.resetJointState(_robot, joint_idx, float(val))
+                p.resetJointState(_robot, joint_idx, math.radians(float(val)))
             p.stepSimulation()
     except KeyboardInterrupt:
         print("Exiting simulation...")

@@ -62,9 +62,9 @@ roboPos = [0,0,0]
 THRESHOLD = 0.005  # max errore IK accettabile (in metri)
 APPROACH_OFFSET = [0,0,0]  # offset rispetto al target
 
-MAPSIZE = [0.8, 0.6, 1.0]      # dimensione del cubo di test (in metri)
+MAPSIZE = [2.0, 2.0, 2.0]      # dimensione del cubo di test (in metri)
 MAPSTEPS = [8, 8, 8]           # quanti step di offset testare lungo ogni asse 
-MAPOFFSET = [0, -0.3, 0.6]     # offset del centro del cubo rispetto alla base globale (in metri) 
+MAPOFFSET = [0, -0.9, 1]       # offset del centro del cubo rispetto alla base globale (in metri) 
 
 #ROTATION SAMPLES
 XRANGE, XSAMPLES = math.pi,   15

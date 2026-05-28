@@ -17,7 +17,7 @@ import joblib
 CKPT_PATH    = "ik_training/best_model.ckpt"
 SCALER_Y_PATH = "ik_training/scaler_y.pkl"
 CSV_PATH     = "dataset.csv"
-URDF_PATH    = "biarm_model/openarm_right.urdf"
+URDF_PATH    = "biarm_model/openarm_right_mirror.urdf"
 
 ROBOPOS      = [0, 0, 0]
 # ARM_JOINTS   = [0, 1, 2, 3, 4, 5, 6]   # 7 giunti

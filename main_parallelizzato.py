@@ -44,7 +44,7 @@ openarmRightConfig = {
     "ee_link_index": 10,  # (TCP)
     "isLocalpath": True,
     "urdf_path": "biarm_model/openarm_right.urdf",
-    "max_reach": 0.8  # stima della lunghezza massima del braccio, usata per filtrare i target troppo lontani
+    "max_reach": 0.7  # stima della lunghezza massima del braccio, usata per filtrare i target troppo lontani
 }
 
 openarmv2rightConfig = {
@@ -64,9 +64,11 @@ roboPos         = [0, 0, 0]
 THRESHOLD       = 0.01  # max errore IK accettabile (in metri) — se troppo basso, rischia di non trovare soluzioni per target lontani; se troppo alto, rischia di accettare soluzioni con errori visibili
 APPROACH_OFFSET = [0, 0, 0]
 
-MAPSIZE = [0.6, 0.5, 1.0]      # dimensione del cubo di test (in metri)
-MAPSTEPS = [15, 15, 25]           # quanti step di offset testare lungo ogni asse 
-MAPOFFSET = [0, -0.3, 0.6]     # offset del centro del cubo rispetto alla base globale (in metri) 
+MAPSIZE = [2.0, 2.0, 2.0]      # dimensione del cubo di test (in metri)
+MAPSTEPSIZE = [0.04, 0.04, 0.04]  # passo di campionamento lungo ogni asse (in metri)
+MAPSTEPS = [int(MAPSIZE[0] / MAPSTEPSIZE[0]), int(MAPSIZE[1] / MAPSTEPSIZE[1]), int(MAPSIZE[2] / MAPSTEPSIZE[2])]          
+# quanti step di offset testare lungo ogni asse 
+MAPOFFSET = [0, -0.9, 1]       # offset del centro del cubo rispetto alla base globale (in metri) 
 
 XRANGE, XSAMPLES = math.pi,   45
 YRANGE, YSAMPLES = math.pi,   45
@@ -260,7 +262,7 @@ def worker_task(args):
         target_position = [i_map, j_map, k_map]
         desired_pos = list(np.array(target_position) + np.array(APPROACH_OFFSET))
 
-        if math.dist(p.getLinkState(robo, actual_arm_joints[0], physicsClientId=client)[4], desired_pos) > max_reach*1.05:
+        if math.dist(p.getLinkState(robo, actual_arm_joints[0], physicsClientId=client)[4], desired_pos) > max_reach:
             continue
 
         # Reset alla rest pose — seed consistente per l'IK
