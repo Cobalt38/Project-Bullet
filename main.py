@@ -62,7 +62,7 @@ roboPos = [0,0,0]
 THRESHOLD = 0.005  # max errore IK accettabile (in metri)
 APPROACH_OFFSET = [0,0,0]  # offset rispetto al target
 
-MAPSIZE = [2.0, 2.0, 2.0]      # dimensione del cubo di test (in metri)
+MAPSIZE = [1.0, 1.0, 1.0]      # dimensione del cubo di test (in metri)
 MAPSTEPS = [8, 8, 8]           # quanti step di offset testare lungo ogni asse 
 MAPOFFSET = [0, -0.9, 1]       # offset del centro del cubo rispetto alla base globale (in metri) 
 
@@ -377,8 +377,8 @@ try:
         target_position = list(np.array([i_map, j_map, k_map]) + np.array(MAPOFFSET))  ##[i_map + MAPOFFSET[0], j_map + MAPOFFSET[1], k_map + MAPOFFSET[2]]
         distance_to_target = math.dist(p.getLinkState(robo, ARM_JOINTS[0])[4], target_position)  # distanza dal base link del robot al target
         
-        print(f"\nDistance to target: {distance_to_target}, Max reach: {max_reach*1.1}")
-        if distance_to_target > max_reach*1.1:
+        print(f"\nDistance to target: {distance_to_target}, Max reach: {max_reach}")
+        if distance_to_target > max_reach:
             # Se il punto è troppo lontano, salta per risparmiare tempo (opzionale)
             continue
         #print(f"\n--- Target position: ({i_map:.2f}, {j_map:.2f}, {k_map:.2f}) ---")
@@ -405,6 +405,10 @@ try:
             maxNumIterations=200,
             residualThreshold=1e-5
         )
+
+        print(f"IK ANGLES: {ik_angles}")
+        print(f"Selected ik_angles: {[ik_angles[ji] for ji in range(len(ARM_JOINTS))]}")
+        print(f"BOH: {[ik_angles[j] for j in ARM_JOINTS]}")
 
         for ji, joint_id in enumerate(ARM_JOINTS):
             p.resetJointState(robo, joint_id, targetValue=ik_angles[ji])
@@ -510,7 +514,7 @@ try:
                         csv_writer.writerow([
                             *desired_pos,                        # x, y, z target
                             *q_target,                           # qx, qy, qz, qw orientamento
-                            *[ik_angles[j] for j in ARM_JOINTS]  # j0..j4
+                            *[ik_angles[j] for j in range(len(ARM_JOINTS))]  # j0..jN
                         ])
                         points_added += 1
                         pbar.set_postfix({"saved": points_added}, refresh=False)

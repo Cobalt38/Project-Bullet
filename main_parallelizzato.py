@@ -44,7 +44,7 @@ openarmRightConfig = {
     "ee_link_index": 10,  # (TCP)
     "isLocalpath": True,
     "urdf_path": "biarm_model/openarm_right.urdf",
-    "max_reach": 0.7  # stima della lunghezza massima del braccio, usata per filtrare i target troppo lontani
+    "max_reach": 0.6  # stima della lunghezza massima del braccio, usata per filtrare i target troppo lontani
 }
 
 openarmv2rightConfig = {
@@ -237,6 +237,12 @@ def worker_task(args):
     if actual_ee_index is None:
         actual_ee_index = actual_arm_joints[-1]
 
+    all_movable = [ # contiene tutti i joint mobili del robot, in ordine di joint_id, escludendo i FIXED
+        i for i in range(p.getNumJoints(robo, physicsClientId=client))
+        if p.getJointInfo(robo, i, physicsClientId=client)[2] != 4  # non FIXED
+    ] # l'IK restituisce un array con un angolo per ogni joint mobile, quindi serve una mappa da joint_id a indice nell'array
+    ik_index_of = {joint_id: idx for idx, joint_id in enumerate(all_movable)} # contiene solo i joint mobili, mappa da joint_id a indice nell'array restituito da IK
+
     # Disabilita collisioni robot (evita incastri durante il campionamento IK)
     for i in range(-1, p.getNumJoints(robo, physicsClientId=client)):
         p.setCollisionFilterGroupMask(robo, i,
@@ -263,6 +269,7 @@ def worker_task(args):
         desired_pos = list(np.array(target_position) + np.array(APPROACH_OFFSET))
 
         if math.dist(p.getLinkState(robo, actual_arm_joints[0], physicsClientId=client)[4], desired_pos) > max_reach:
+            processed_points += 1
             continue
 
         # Reset alla rest pose — seed consistente per l'IK
@@ -299,9 +306,9 @@ def worker_task(args):
                         ee_ref_orientation, sampleX, sampleY, sampleZ)
 
                     # Reset alla rest pose prima di ogni IK con orientamento
-                    # for ji, jid in enumerate(actual_arm_joints):
-                    #     p.resetJointState(robo, jid, actual_rest_pose[ji],
-                    #                       physicsClientId=client)
+                    for ji, jid in enumerate(actual_arm_joints):
+                        p.resetJointState(robo, jid, actual_rest_pose[ji],
+                                          physicsClientId=client)
 
                     ik_angles = p.calculateInverseKinematics(
                         robo, actual_ee_index, desired_pos,
@@ -332,7 +339,7 @@ def worker_task(args):
                         results.append([
                             *desired_pos,                               # x, y, z target
                             *q_target,                                  # qx, qy, qz, qw
-                            *[ik_angles[ji] for ji in range(len(actual_arm_joints))]  # j0..jN
+                            *[ik_angles[ik_index_of[jid]] for jid in actual_arm_joints]  # j0..jN
                         ])
 
         processed_points += 1
@@ -358,7 +365,7 @@ def main():
     # nel processo principale per dedurli, poi passa i valori risolti ai worker
     arm_joints    = ROBOT_CONFIG["arm_joints"]
     rest_pose     = ROBOT_CONFIG["rest_pose"]
-    ee_link_index = ROBOT_CONFIG["ee_link_index"] or None
+    ee_link_index = ROBOT_CONFIG.get("ee_link_index")
     
 
     if arm_joints == [] or rest_pose == [] or \
