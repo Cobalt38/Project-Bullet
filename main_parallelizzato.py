@@ -44,7 +44,7 @@ openarmRightConfig = {
     "ee_link_index": 10,  # (TCP)
     "isLocalpath": True,
     "urdf_path": "biarm_model/openarm_right.urdf",
-    "max_reach": 0.6  # stima della lunghezza massima del braccio, usata per filtrare i target troppo lontani
+    "max_reach": 0.7  # stima della lunghezza massima del braccio, usata per filtrare i target troppo lontani
 }
 
 openarmv2rightConfig = {
