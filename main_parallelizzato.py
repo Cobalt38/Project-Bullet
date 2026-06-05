@@ -201,14 +201,14 @@ def worker_task(args):
      roboPos, script_dir, robot_config) = config
 
     client = p.connect(p.DIRECT)
-    # for(i_map, j_map, k_map) in point_chunk:
-    #     pos = (i_map, j_map, k_map)
-    #     p.addUserDebugPoints(
-    #                     pointPositions=[pos],
-    #                     pointColorsRGB=[[1, 0.5, 0]],   # arancione
-    #                     pointSize=3,
-    #                     lifeTime=0
-    #                 )
+    """ for(i_map, j_map, k_map) in point_chunk:
+        pos = (i_map, j_map, k_map)
+        p.addUserDebugPoints(
+                        pointPositions=[pos],
+                        pointColorsRGB=[[1, 0.5, 0]],   # arancione
+                        pointSize=3,
+                        lifeTime=0
+                    ) """
 
     p.setGravity(0, 0, 0, physicsClientId=client)
     p.setAdditionalSearchPath(pybullet_data.getDataPath(), physicsClientId=client)
@@ -237,18 +237,17 @@ def worker_task(args):
     if actual_ee_index is None:
         actual_ee_index = actual_arm_joints[-1]
 
+    #----------------------#
+    ### MAPPATURA GIUNTI ###
+    #----------------------#
+
     all_movable = [ # contiene tutti i joint mobili del robot, in ordine di joint_id, escludendo i FIXED
-        i for i in range(p.getNumJoints(robo, physicsClientId=client))
-        if p.getJointInfo(robo, i, physicsClientId=client)[2] != 4  # non FIXED
+        i for i in range(p.getNumJoints(robo, physicsClientId=client)) if p.getJointInfo(robo, i, physicsClientId=client)[2] != 4  # non FIXED
     ] # l'IK restituisce un array con un angolo per ogni joint mobile, quindi serve una mappa da joint_id a indice nell'array
     ik_index_of = {joint_id: idx for idx, joint_id in enumerate(all_movable)} # contiene solo i joint mobili, mappa da joint_id a indice nell'array restituito da IK
 
-    # Disabilita collisioni robot (evita incastri durante il campionamento IK)
-    for i in range(-1, p.getNumJoints(robo, physicsClientId=client)):
-        p.setCollisionFilterGroupMask(robo, i,
-                                      collisionFilterGroup=0,
-                                      collisionFilterMask=0,
-                                      physicsClientId=client)
+    for i in range(-1, p.getNumJoints(robo, physicsClientId=client)): # Disabilita collisioni robot (evita incastri durante il campionamento IK)
+        p.setCollisionFilterGroupMask(robo, i, collisionFilterGroup=0, collisionFilterMask=0, physicsClientId=client)
 
     # Limiti IK estratti dal robot
     lower_limits, upper_limits, joint_ranges = [], [], []
@@ -274,8 +273,7 @@ def worker_task(args):
 
         # Reset alla rest pose — seed consistente per l'IK
         for ji, jid in enumerate(actual_arm_joints):
-            p.resetJointState(robo, jid, actual_rest_pose[ji],
-                              physicsClientId=client)
+            p.resetJointState(robo, jid, actual_rest_pose[ji], physicsClientId=client)
 
         # IK senza orientamento — trova la posa di riferimento naturale
         ik_angles = p.calculateInverseKinematics(
@@ -294,21 +292,17 @@ def worker_task(args):
 
         p.stepSimulation(physicsClientId=client)
 
-        ee_ref_orientation = p.getLinkState(
-            robo, actual_ee_index, physicsClientId=client)[5]
+        ee_ref_orientation = p.getLinkState(robo, actual_ee_index, physicsClientId=client)[5]
 
         # Campionamento rotazioni
         for sampleX in xSamples:
             for sampleY in ySamples:
                 for sampleZ in zSamples:
-
-                    q_target = local_axes_to_quaternion(
-                        ee_ref_orientation, sampleX, sampleY, sampleZ)
+                    q_target = local_axes_to_quaternion(ee_ref_orientation, sampleX, sampleY, sampleZ)
 
                     # Reset alla rest pose prima di ogni IK con orientamento
                     for ji, jid in enumerate(actual_arm_joints):
-                        p.resetJointState(robo, jid, actual_rest_pose[ji],
-                                          physicsClientId=client)
+                        p.resetJointState(robo, jid, actual_rest_pose[ji], physicsClientId=client)
 
                     ik_angles = p.calculateInverseKinematics(
                         robo, actual_ee_index, desired_pos,
@@ -323,24 +317,17 @@ def worker_task(args):
                     )
 
                     for ji, jid in enumerate(actual_arm_joints):
-                        p.resetJointState(robo, jid, ik_angles[ji],
-                                          physicsClientId=client)
+                        p.resetJointState(robo, jid, ik_angles[ji], physicsClientId=client)
 
                     p.stepSimulation(physicsClientId=client)
 
                     # Verifica IK
-                    ee_pos = p.getLinkState(robo, actual_ee_index,
-                                            physicsClientId=client)[4]
+                    ee_pos = p.getLinkState(robo, actual_ee_index, physicsClientId=client)[4]
 
-                    ik_error = math.sqrt(
-                        sum((ee_pos[i] - desired_pos[i])**2 for i in range(3)))
+                    ik_error = math.sqrt(sum((ee_pos[i] - desired_pos[i])**2 for i in range(3)))
 
                     if ik_error < THRESHOLD:
-                        results.append([
-                            *desired_pos,                               # x, y, z target
-                            *q_target,                                  # qx, qy, qz, qw
-                            *[ik_angles[ik_index_of[jid]] for jid in actual_arm_joints]  # j0..jN
-                        ])
+                        results.append([ *desired_pos, *q_target, *[ik_angles[ik_index_of[jid]] for jid in actual_arm_joints] ])
 
         processed_points += 1
 
@@ -353,8 +340,7 @@ def worker_task(args):
 # ─────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--workers", type=int, default=None,
-                        help="Numero di processi (default: cpu_count - 1)")
+    parser.add_argument("--workers", type=int, default=None, help="Numero di processi (default: cpu_count - 1)")
     args = parser.parse_args()
 
     mp.set_start_method("spawn", force=True)
@@ -373,15 +359,13 @@ def main():
 
         print("Deduzione ARM_JOINTS / REST_POSE dal robot...")
         client_tmp = p.connect(p.DIRECT)
-        p.setAdditionalSearchPath(pybullet_data.getDataPath(),
-                                  physicsClientId=client_tmp)
+        p.setAdditionalSearchPath(pybullet_data.getDataPath(), physicsClientId=client_tmp)
         if ROBOT_CONFIG["isLocalpath"]:
             urdf_tmp = os.path.join(script_dir, ROBOT_CONFIG["urdf_path"])
         else:
             urdf_tmp = ROBOT_CONFIG["urdf_path"]
 
-        robo_tmp = p.loadURDF(urdf_tmp, useFixedBase=True,
-                              physicsClientId=client_tmp)
+        robo_tmp = p.loadURDF(urdf_tmp, useFixedBase=True, physicsClientId=client_tmp)
 
         if arm_joints == []:
             arm_joints = get_model_joints(robo_tmp, client_tmp)
@@ -416,10 +400,7 @@ def main():
     kSteps = make_samples(MAPSTEPS[2], MAPSIZE[2]/2)
 
     # MAPOFFSET applicato qui — i worker ricevono già le coordinate assolute
-    point_combinations = [
-        (i + MAPOFFSET[0], j + MAPOFFSET[1], k + MAPOFFSET[2])
-        for i in iSteps for j in jSteps for k in kSteps
-    ]
+    point_combinations = [ (i + MAPOFFSET[0], j + MAPOFFSET[1], k + MAPOFFSET[2]) for i in iSteps for j in jSteps for k in kSteps ]
     total_points = len(point_combinations)
 
     config = (
@@ -429,10 +410,7 @@ def main():
     )
 
     chunk_size = 100
-    chunks = [
-        point_combinations[i:i+chunk_size]
-        for i in range(0, total_points, chunk_size)
-    ]
+    chunks = [ point_combinations[i:i+chunk_size] for i in range(0, total_points, chunk_size) ]
 
     n_workers = args.workers if args.workers is not None \
                 else max(1, mp.cpu_count() - 1)
@@ -452,8 +430,7 @@ def main():
 
     args_iter = [(i, chunk, config) for i, chunk in enumerate(chunks)]
 
-    log = init_log(log_path, n_workers, len(chunks), total_points,
-                   arm_joints, ee_link_index, rest_pose)
+    log = init_log(log_path, n_workers, len(chunks), total_points, arm_joints, ee_link_index, rest_pose)
 
     def setup_signal_handlers(pool):
         pgid = os.getpgid(os.getpid())  # process group id del padre
@@ -475,8 +452,7 @@ def main():
     try:
         with mp.Pool(n_workers) as pool, \
              open(csv_path, "w", newline="") as csv_file, \
-             tqdm(total=total_points, desc="Punti", unit="pt",
-                  bar_format="{l_bar}{bar:25}{r_bar}{postfix}") as pbar:
+             tqdm(total=total_points, desc="Punti", unit="pt", bar_format="{l_bar}{bar:25}{r_bar}{postfix}") as pbar:
             
             setup_signal_handlers(pool)
 
