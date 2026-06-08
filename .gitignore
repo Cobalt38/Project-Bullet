@@ -8,6 +8,7 @@ marioenv/
 *.csv
 csv_belli/*.csv
 csv_belli/marioenv
+validation_output/
 
 
 # C extensions
