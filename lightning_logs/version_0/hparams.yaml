@@ -1,4 +1,0 @@
-hidden_dim: 64
-input_dim: 7
-lr: 0.001
-output_dim: 7
