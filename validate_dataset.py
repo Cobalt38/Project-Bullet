@@ -622,6 +622,9 @@ def main():
         except Exception as e:
             print(f"  [WARN] Impossibile caricare URDF per i limiti: {e}")
 
+    from datetime import datetime
+    run_dir = os.path.join(args.out, datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
+    args.out = run_dir
     make_out(args.out)
     np.random.seed(args.seed)
 
