@@ -190,6 +190,7 @@ def compute_streaming_stats(ds, n_features):
     M2 = np.zeros(n_features, dtype=np.float64)
 
     for x_batch, _ in ds:
+        print(f"Calcolo stats: batch {n//ds._batch_size} (righe {n} - {n + x_batch.shape[0]})", end="\r")
 
         batch = x_batch.numpy().astype(np.float64)
 
@@ -575,4 +576,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        main()
+    except Exception as e:
+        print(f"Errore: {e}")
+        exit(1)
