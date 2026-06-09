@@ -144,61 +144,38 @@ def estimate_rows(csv_path: str) -> int:
 # ---------------------------------------------------------------------------
 
 class WelfordNormalization(tf.keras.layers.Layer):
-    """
-    Primo epoch: accumula mean/std con Welford su ogni batch in forward pass.
-    Dal secondo epoch: normalizza con le statistiche congelate.
-    """
+
     def __init__(self, n_features: int, **kwargs):
         super().__init__(**kwargs)
         self.n_features = n_features
 
     def build(self, input_shape):
+
         self.mean = self.add_weight(
-            name="mean", shape=(self.n_features,),
-            initializer="zeros", trainable=False
+            name="mean",
+            shape=(self.n_features,),
+            initializer="zeros",
+            trainable=False,
         )
+
         self.std = self.add_weight(
-            name="std", shape=(self.n_features,),
-            initializer="ones", trainable=False
+            name="std",
+            shape=(self.n_features,),
+            initializer="ones",
+            trainable=False,
         )
-        # Contatori Welford (non sono pesi TF, vivono in numpy)
-        self._n  = 0
-        self._m  = np.zeros(self.n_features, dtype=np.float64)
-        self._M2 = np.zeros(self.n_features, dtype=np.float64)
-        self._frozen = False
+
         super().build(input_shape)
 
     def call(self, x, training=False):
-        if training and not self._frozen:
-            # Aggiorna Welford con i valori del batch corrente
-            batch = x.numpy().astype(np.float64)
-            for row in batch:
-                self._n += 1
-                delta = row - self._m
-                self._m  += delta / self._n
-                self._M2 += delta * (row - self._m)
 
         return (x - self.mean) / (self.std + 1e-6)
 
-    def freeze(self):
-        """Chiamato alla fine del primo epoch: congela le statistiche."""
-        if self._n < 2:
-            return
-        std = np.sqrt(self._M2 / (self._n - 1)).astype(np.float32)
-        std[std < 1e-6] = 1.0
-        self.mean.assign(self._m.astype(np.float32))
+    def set_stats(self, mean, std):
+
+        self.mean.assign(mean)
+
         self.std.assign(std)
-        self._frozen = True
-        print(f"\nNorm congelata dopo {self._n} campioni — mean={self.mean.numpy()}, std={self.std.numpy()}")
-
-class FreezeNormAfterFirstEpoch(tf.keras.callbacks.Callback):
-    def __init__(self, norm_layer: WelfordNormalization):
-        super().__init__()
-        self.norm_layer = norm_layer
-
-    def on_epoch_end(self, epoch, logs=None):
-        if epoch == 0:
-            self.norm_layer.freeze()
 
 def compute_streaming_stats(ds, n_features):
     """
@@ -459,6 +436,15 @@ def main() -> int:
                                     split_lo=train_fraction,                    split_hi=train_fraction + args.val_split)
     test_ds  = make_streaming_dataset(**common, shuffle_buffer=0,
                                     split_lo=train_fraction + args.val_split,   split_hi=1.0)
+    
+    print("\nCalcolo statistiche di normalizzazione...")
+
+    norm_mean, norm_std = compute_streaming_stats(
+        train_ds,
+        n_in,
+    )
+
+    print("Statistiche calcolate.")
 
     # ------------------------------------------------------------------
     # Modello
@@ -472,6 +458,11 @@ def main() -> int:
         weight_decay=args.weight_decay,
         loss_name=args.loss,
         huber_delta=args.huber_delta,
+    )
+
+    norm_layer.set_stats(
+        norm_mean,
+        norm_std,
     )
     model.summary()
 
@@ -513,7 +504,6 @@ def main() -> int:
             min_delta=args.early_stop_min_delta,
             restore_best_weights=True,
         ),
-        FreezeNormAfterFirstEpoch(norm_layer), 
     ]
     if args.loss_target > 0.0:
         callbacks.append(StopOnLossTarget(args.loss_target, monitor=monitor))
