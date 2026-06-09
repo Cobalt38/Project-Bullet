@@ -189,8 +189,8 @@ def compute_streaming_stats(ds, n_features):
 
     M2 = np.zeros(n_features, dtype=np.float64)
 
-    for x_batch, _ in ds:
-        print(f"Calcolo stats: batch {n//ds._batch_size} (righe {n} - {n + x_batch.shape[0]})", end="\r")
+    for x_batch, ind in ds:
+        print(f"Calcolo stats: batch {ind}", end="\r")
 
         batch = x_batch.numpy().astype(np.float64)
 
