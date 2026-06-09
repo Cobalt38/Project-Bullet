@@ -363,6 +363,7 @@ def evaluate_set(
 # ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
+    print("Parsing arguments...")
     p = argparse.ArgumentParser(description="IK trainer – streaming dataset")
     p.add_argument("--csv",         required=True,      help="Percorso del file CSV")
     p.add_argument("--model_dir",   default="ik_model", help="Directory output")
@@ -398,7 +399,11 @@ def parse_args() -> argparse.Namespace:
 # ---------------------------------------------------------------------------
 
 def main() -> int:
+    print("Benvenuti nell'IK trainer!")
     args = parse_args()
+    print("Args parsed:")
+    for arg, value in vars(args).items():
+        print(f"  {arg}: {value}")
 
     if args.val_split < 0 or args.test_split < 0 or (args.val_split + args.test_split) >= 1.0:
         raise ValueError("val_split + test_split deve essere < 1.0")
@@ -408,13 +413,14 @@ def main() -> int:
         raise FileNotFoundError(f"CSV non trovato: {csv_path}")
 
     output_cols = detect_output_cols(csv_path)
+    print(f"CSV trovato: {csv_path}")
+    print(f"Input columns: {INPUT_COLS}")
+    print(f"Output columns rilevate: {output_cols}")
+
     n_in  = len(INPUT_COLS)
     n_out = len(output_cols)
     train_fraction = 1.0 - args.val_split - args.test_split
 
-    size_gb = os.path.getsize(csv_path) / 1024**3
-    # est_rows = estimate_rows(csv_path)
-    # print(f"CSV: {csv_path}  ({size_gb:.1f} GB, ~{est_rows:,} righe stimato)")
     print(f"Input  ({n_in}): {INPUT_COLS}")
     print(f"Output ({n_out}): {output_cols}")
     print(f"Split: train={train_fraction:.0%}  val={args.val_split:.0%}  test={args.test_split:.0%}")
@@ -449,6 +455,7 @@ def main() -> int:
     # ------------------------------------------------------------------
     # Modello
     # ------------------------------------------------------------------
+    print("\nCostruzione modello...")
     model, norm_layer = build_model(
         input_dim=n_in,
         output_dim=n_out,
@@ -464,6 +471,7 @@ def main() -> int:
         norm_mean,
         norm_std,
     )
+    print("\nModello costruito:")
     model.summary()
 
     # ------------------------------------------------------------------
