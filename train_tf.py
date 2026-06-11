@@ -192,7 +192,7 @@ def build_model(
 
 
 # ---------------------------------------------------------------------------
-# Callback: stop su soglia
+# Callbacks
 # ---------------------------------------------------------------------------
 
 class StopOnLossTarget(tf.keras.callbacks.Callback):
@@ -207,6 +207,14 @@ class StopOnLossTarget(tf.keras.callbacks.Callback):
             print(f"\nEpoch {epoch+1}: {self.monitor}={val:.6f} < {self.loss_target:.6f} → stop.")
             self.model.stop_training = True
 
+# class CheckpointEveryN(tf.keras.callbacks.ModelCheckpoint):
+#     def __init__(self, every_n: int, *args, **kwargs):
+#         super().__init__(*args, **kwargs)
+#         self.every_n = every_n
+
+#     def on_epoch_end(self, epoch, logs=None):
+#         if (epoch + 1) % self.every_n == 0:
+#             super().on_epoch_end(epoch, logs)
 
 # ---------------------------------------------------------------------------
 # Valutazione finale
@@ -275,7 +283,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--parquet_dir",  required=True,
                    help="Directory con train.parquet, val.parquet, test.parquet")
     p.add_argument("--model_dir",    default="ik_model")
-    p.add_argument("--epochs",       type=int,   default=120)
+    p.add_argument("--epochs",       type=int,   default=200)
     p.add_argument("--batch_size",   type=int,   default=4096)
     p.add_argument("--hidden",       type=int,   nargs="+", default=[256, 256, 256, 128])
     p.add_argument("--dropout",      type=float, default=0.05)
@@ -362,10 +370,6 @@ def main() -> int:
 
     callbacks = [
         tf.keras.callbacks.TerminateOnNaN(),
-        tf.keras.callbacks.ModelCheckpoint(
-            filepath=os.path.join(ckpt_dir, "epoch_{epoch:04d}.keras"),
-            monitor=monitor, save_best_only=False, verbose=0,
-        ),
         tf.keras.callbacks.ModelCheckpoint(
             filepath=os.path.join(ckpt_dir, "best_model.keras"),
             monitor=monitor, save_best_only=True, verbose=1,
