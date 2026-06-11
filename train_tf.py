@@ -218,26 +218,33 @@ def evaluate_set(
     ds: tf.data.Dataset,
     output_cols: List[str],
 ) -> Dict:
-    all_true, all_pred = [], []
+    n        = 0
+    sum_abs  = None
+    sum_sq   = None
+
     for x_batch, y_batch in ds:
         pred = model(x_batch, training=False).numpy()
-        all_true.append(y_batch.numpy())
-        all_pred.append(pred)
+        true = y_batch.numpy()
 
-    if not all_true:
+        true_angles = np.rad2deg(np.arctan2(true[:, 0::2], true[:, 1::2]))
+        pred_angles = np.rad2deg(np.arctan2(pred[:, 0::2], pred[:, 1::2]))
+        diff        = (pred_angles - true_angles + 180.0) % 360.0 - 180.0
+
+        if sum_abs is None:
+            sum_abs = np.zeros(diff.shape[1], dtype=np.float64)
+            sum_sq  = np.zeros(diff.shape[1], dtype=np.float64)
+
+        sum_abs += np.sum(np.abs(diff), axis=0)
+        sum_sq  += np.sum(diff ** 2,    axis=0)
+        n       += diff.shape[0]
+
+    if n == 0:
         print(f"{name}: vuoto")
         return {}
 
-    true = np.concatenate(all_true, axis=0)
-    pred = np.concatenate(all_pred, axis=0)
-
-    true_angles = np.rad2deg(np.arctan2(true[:, 0::2], true[:, 1::2]))
-    pred_angles = np.rad2deg(np.arctan2(pred[:, 0::2], pred[:, 1::2]))
-    diff        = (pred_angles - true_angles + 180.0) % 360.0 - 180.0
-
-    mae         = float(np.mean(np.abs(diff)))
-    rmse        = float(np.sqrt(np.mean(diff**2)))
-    per_col_mae = np.mean(np.abs(diff), axis=0)
+    per_col_mae = (sum_abs / n).astype(np.float32)
+    mae         = float(np.mean(per_col_mae))
+    rmse        = float(np.sqrt(np.mean(sum_sq / n)))
 
     joint_names = [c[:-4] for c in output_cols if c.endswith("_sin")]
     worst_idx   = np.argsort(per_col_mae)[-5:][::-1]
@@ -248,7 +255,7 @@ def evaluate_set(
         print(f"  {jname}: {float(per_col_mae[i]):.4f}°")
 
     return {
-        "rows":     int(true.shape[0]),
+        "rows":     n,
         "mae_deg":  mae,
         "rmse_deg": rmse,
         "worst": [
