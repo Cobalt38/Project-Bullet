@@ -4,10 +4,9 @@ __pycache__/
 *$py.class
 
 marioenv/
+parquet_data/
 .venv
 *.csv
-csv_belli/*.csv
-csv_belli/marioenv
 validation_output/
 
 

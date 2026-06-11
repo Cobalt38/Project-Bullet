@@ -189,8 +189,11 @@ def compute_streaming_stats(ds, n_features):
 
     M2 = np.zeros(n_features, dtype=np.float64)
 
-    for x_batch, ind in ds:
-        print(f"Calcolo stats: batch {ind}", end="\r")
+    batch_index = 0
+
+    for x_batch, _ in ds:
+        counted_rows += 1
+        print(f"Calcolo stats: batch {batch_index}", end="\r")
 
         batch = x_batch.numpy().astype(np.float64)
 

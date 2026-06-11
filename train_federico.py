@@ -149,6 +149,8 @@ def infer_rotation_format(columns: List[str]) -> str:
         return "quat"
     if all(c.endswith(("_rx", "_ry", "_rz")) for c in columns):
         return "euler_deg"
+    # if all(c.endswith(("_sin", "_cos")) for c in columns):
+    #     return "sincos"
     return "unknown"
 
 def load_csv(
