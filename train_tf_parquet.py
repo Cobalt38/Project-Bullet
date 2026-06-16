@@ -119,33 +119,27 @@ def make_parquet_dataset(
     n_in  = len(INPUT_COLS)
     n_out = len(output_cols)
 
-    pf = pq.ParquetFile(parquet_path)
-    n_row_groups = pf.metadata.num_row_groups
+    n_row_groups = pq.ParquetFile(parquet_path).metadata.num_row_groups
 
     def _generator():
+        # Apri il file: ogni worker ha il suo handle
+        pf = pq.ParquetFile(parquet_path)
         rg_indices = list(range(n_row_groups))
         if shuffle_row_groups:
-            rng = random.Random(seed)
-            rng.shuffle(rg_indices)
+            random.shuffle(rg_indices)
 
         for rg_idx in rg_indices:
-            # Legge un singolo row group (solo le colonne necessarie)
             table = pf.read_row_group(rg_idx, columns=all_cols)
             arr   = table.to_pydict()
-            # Costruisce array NumPy (float32) per il batch
             data  = np.column_stack(
                 [np.asarray(arr[c], dtype=np.float32) for c in all_cols]
             )
-            # Yield riga per riga (TF raccoglierà in batch con .batch())
             yield from data
 
     out_sig = tf.TensorSpec(shape=(n_in + n_out,), dtype=tf.float32)
-
     ds = tf.data.Dataset.from_generator(_generator, output_signature=out_sig)
-    ds = ds.map(
-        lambda row: (row[:n_in], row[n_in:]),
-        num_parallel_calls=tf.data.AUTOTUNE,
-    )
+    ds = ds.map(lambda row: (row[:n_in], row[n_in:]),
+                num_parallel_calls=tf.data.AUTOTUNE)
     ds = ds.batch(batch_size).prefetch(tf.data.AUTOTUNE)
     return ds
 
@@ -175,8 +169,9 @@ def build_model(
         x = tf.keras.layers.Activation("gelu", name=f"act_{i+1}")(x)
         if dropout > 0:
             x = tf.keras.layers.Dropout(dropout, name=f"drop_{i+1}")(x)
-        if residual.shape[-1] == units:
-            x = tf.keras.layers.Add(name=f"res_{i+1}")([residual, x])
+        if residual.shape[-1] != units:
+            residual = tf.keras.layers.Dense(units, use_bias=False)(residual)
+        x = tf.keras.layers.Add(name=f"res_{i+1}")([residual, x])
 
     out   = tf.keras.layers.Dense(output_dim, name="output")(x)
     model = tf.keras.Model(inp, out)
@@ -338,9 +333,7 @@ def main() -> int:
     # ------------------------------------------------------------------
     common = dict(output_cols=output_cols, batch_size=args.batch_size)
 
-    train_ds = make_parquet_dataset(
-        train_path, shuffle_row_groups=args.shuffle_row_groups, seed=42, **common
-    )
+    train_ds = make_parquet_dataset(train_path, shuffle_row_groups=args.shuffle_row_groups, seed=42, **common).repeat()
     val_ds   = make_parquet_dataset(val_path,  shuffle_row_groups=False, seed=42, **common)
     test_ds  = make_parquet_dataset(test_path, shuffle_row_groups=False, seed=42, **common)
 
@@ -391,8 +384,12 @@ def main() -> int:
     # Training
     # ------------------------------------------------------------------
     print(f"\nTraining → max {args.epochs} epoche, batch {args.batch_size}")
+    total_train_rows = pq.ParquetFile(train_path).metadata.num_rows
+    steps_per_epoch  = total_train_rows // args.batch_size
+
     history = model.fit(
         train_ds,
+        steps_per_epoch=steps_per_epoch,
         validation_data=val_ds,
         epochs=args.epochs,
         callbacks=callbacks,
