@@ -150,13 +150,19 @@ def make_parquet_dataset(
                 [np.asarray(arr[c], dtype=np.float32) for c in all_cols]
             )
             np.random.shuffle(data)
-            yield from data
+            for i in range(0, len(data), batch_size):
+                chunk = data[i:i + batch_size]
+                if len(chunk) == batch_size:  # scarta l'ultimo batch incompleto
+                    yield chunk
+    out_sig = tf.TensorSpec(shape=(batch_size, n_in + n_out), dtype=tf.float32)
 
-    out_sig = tf.TensorSpec(shape=(n_in + n_out,), dtype=tf.float32)
     ds = tf.data.Dataset.from_generator(_generator, output_signature=out_sig)
-    ds = ds.map(lambda row: (row[:n_in], row[n_in:]),
-                num_parallel_calls=tf.data.AUTOTUNE)
-    ds = ds.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+    ds = ds.map(
+        lambda batch: (batch[:, :n_in], batch[:, n_in:]),
+        num_parallel_calls=tf.data.AUTOTUNE,
+    )
+    ds = ds.prefetch(tf.data.AUTOTUNE)
+
     return ds
 
 
@@ -421,12 +427,9 @@ def main() -> int:
     # Training
     # ------------------------------------------------------------------
     print(f"\nTraining → max {args.epochs} epoche, batch {args.batch_size}")
-    total_train_rows = pq.ParquetFile(train_path).metadata.num_rows
-    steps_per_epoch  = total_train_rows // args.batch_size
 
     history = model.fit(
         train_ds,
-        steps_per_epoch=steps_per_epoch,
         validation_data=val_ds,
         epochs=args.epochs,
         callbacks=callbacks,
