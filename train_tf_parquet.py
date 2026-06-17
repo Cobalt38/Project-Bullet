@@ -294,6 +294,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--reduce_lr_factor",     type=float, default=0.5)
     p.add_argument("--min_lr",               type=float, default=1e-6)
     p.add_argument("--loss_target",          type=float, default=0.0)
+    p.add_argument("--resume", action="store_true",
+               help="Riprendi dal checkpoint migliore esistente in model_dir/checkpoints/")
     return p.parse_args()
 
 
@@ -338,19 +340,32 @@ def main() -> int:
     test_ds  = make_parquet_dataset(test_path, shuffle_row_groups=False, seed=42, **common)
 
     # ------------------------------------------------------------------
-    # Modello  (nessuna passata preliminare sul dataset)
+    # Modello
     # ------------------------------------------------------------------
-    print("\nCostruzione modello...")
-    model = build_model(
-        input_dim=n_in,
-        output_dim=n_out,
-        hidden=args.hidden,
-        dropout=args.dropout,
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-        loss_name=args.loss,
-        huber_delta=args.huber_delta,
-    )
+    ckpt_path = os.path.join(args.model_dir, "checkpoints", "best_model.keras")
+
+    if args.resume and os.path.isfile(ckpt_path):
+        print(f"\nRipresa da checkpoint: {ckpt_path}")
+        model = tf.keras.models.load_model(
+            ckpt_path,
+            custom_objects={"MinMaxNormalization": MinMaxNormalization},
+        )
+        # Aggiorna il learning rate se passato esplicitamente
+        tf.keras.backend.set_value(model.optimizer.learning_rate, args.lr)
+        print(f"  LR impostato a: {args.lr}")
+    else:
+        print("\nCostruzione modello da zero...")
+        model = build_model(
+            input_dim=n_in,
+            output_dim=n_out,
+            hidden=args.hidden,
+            dropout=args.dropout,
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+            loss_name=args.loss,
+            huber_delta=args.huber_delta,
+        )
+
     model.summary()
 
     # ------------------------------------------------------------------
