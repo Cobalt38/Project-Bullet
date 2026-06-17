@@ -47,15 +47,30 @@ INPUT_SCALE = np.array([2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0], dtype=np.float32)
 
 
 def detect_output_cols(parquet_path: str) -> List[str]:
-    """Legge solo lo schema del Parquet (zero righe)."""
+    """Legge solo lo schema del Parquet (zero righe) e restituisce
+    le colonne output in ordine [joint1_sin, joint1_cos, joint2_sin, ...]."""
     schema = pq.read_schema(parquet_path)
-    cols = [name for name in schema.names
-            if name.endswith("_sin") or name.endswith("_cos")]
-    if not cols:
+    sin_cols = [n for n in schema.names if n.endswith("_sin")]
+    cos_cols = [n for n in schema.names if n.endswith("_cos")]
+
+    if not sin_cols or not cos_cols:
         raise ValueError(
             f"Nessuna colonna *_sin/*_cos nel Parquet: {parquet_path}\n"
             f"Colonne disponibili: {schema.names}"
         )
+
+    # Verifica che ogni _sin abbia il corrispondente _cos
+    sin_joints = [c[:-4] for c in sin_cols]
+    cos_joints = [c[:-4] for c in cos_cols]
+    missing = set(sin_joints) ^ set(cos_joints)
+    if missing:
+        raise ValueError(f"Colonne sin/cos non appaiate per i giunti: {missing}")
+
+    # Restituisce in ordine alternato: sin, cos, sin, cos, ...
+    cols = []
+    for joint in sin_joints:
+        cols.append(f"{joint}_sin")
+        cols.append(f"{joint}_cos")
     return cols
 
 
@@ -134,6 +149,7 @@ def make_parquet_dataset(
             data  = np.column_stack(
                 [np.asarray(arr[c], dtype=np.float32) for c in all_cols]
             )
+            np.random.shuffle(data)
             yield from data
 
     out_sig = tf.TensorSpec(shape=(n_in + n_out,), dtype=tf.float32)
@@ -350,9 +366,15 @@ def main() -> int:
             ckpt_path,
             custom_objects={"MinMaxNormalization": MinMaxNormalization},
         )
-        # Aggiorna il learning rate se passato esplicitamente
-        tf.keras.backend.set_value(model.optimizer.learning_rate, args.lr)
-        print(f"  LR impostato a: {args.lr}")
+        metadata_path = os.path.join(args.model_dir, "metadata.json")
+        if os.path.isfile(metadata_path):
+            with open(metadata_path) as f:
+                saved_meta = json.load(f)
+            resume_lr = saved_meta.get("lr", args.lr)
+        else:
+            resume_lr = args.lr
+        print(f"  LR impostato a: {resume_lr}")
+        tf.keras.backend.set_value(model.optimizer.learning_rate, resume_lr)
     else:
         print("\nCostruzione modello da zero...")
         model = build_model(
@@ -425,7 +447,7 @@ def main() -> int:
         "dropout":        args.dropout,
         "loss":           args.loss,
         "huber_delta":    args.huber_delta if args.loss == "huber" else None,
-        "lr":             args.lr,
+        "lr": float(tf.keras.backend.get_value(model.optimizer.learning_rate)),
         "batch_size":     args.batch_size,
         "weight_decay":   args.weight_decay,
     }
