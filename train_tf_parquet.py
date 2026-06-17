@@ -192,7 +192,7 @@ def build_model(
         if dropout > 0:
             x = tf.keras.layers.Dropout(dropout, name=f"drop_{i+1}")(x)
         if residual.shape[-1] != units:
-            residual = tf.keras.layers.Dense(units, use_bias=False)(residual)
+            residual = tf.keras.layers.Dense(units, name=f"dense_{i+1}_res", use_bias=False)(residual)
         x = tf.keras.layers.Add(name=f"res_{i+1}")([residual, x])
 
     out   = tf.keras.layers.Dense(output_dim, name="output")(x)
