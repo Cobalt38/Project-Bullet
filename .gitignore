@@ -5,9 +5,10 @@ __pycache__/
 
 marioenv/
 parquet_data/
+ik_model/
+validation_output/
 .venv
 *.csv
-validation_output/
 
 
 # C extensions
