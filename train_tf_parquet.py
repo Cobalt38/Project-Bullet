@@ -1,22 +1,9 @@
 #!/usr/bin/env python3
 """
-train_ik.py  –  IK trainer con dataset Parquet, normalizzazione min-max fissa.
-
-Flusso di lavoro:
-  1. Converti il CSV una volta sola con convert_to_parquet.py
-     → genera train.parquet, val.parquet, test.parquet
-  2. Lancia questo script puntando alla directory Parquet
-
-Miglioramenti rispetto alla versione CSV:
-  - 0 iterazioni preliminari sul dataset (niente Welford, niente hash)
-  - Lettura colonnare: PyArrow legge solo le colonne utili, skip delle altre
-  - Split fisico: train/val/test sono file separati, nessun filtro per riga
-  - Shuffle vero: mescolamento dell'ordine dei row group tra epoche (config.)
-  - Compressione nativa Parquet: dataset su disco ~3-4x più piccolo
-  - Normalizzazione min-max con range fissi noti a priori (hardcoded)
-
 Input  : target_x, target_y, target_z, hand_quat_qx/qy/qz/qw  (7 col.)
 Output : *_sin / *_cos per ogni giunto
+
+--batch_size 4096 --reader_batch_rows 131072 --train_shuffle_buffer_batches 256 --eval_shuffle_buffer_batches 1  --shuffle_row_groups
 """
 
 import argparse
@@ -115,60 +102,155 @@ def make_parquet_dataset(
     parquet_path: str,
     output_cols: List[str],
     batch_size: int,
-    shuffle_row_groups: bool = False,
+    shuffle_row_groups: bool = True, # da provare anche con false
+    reader_batch_rows: int = 131072, # boh da provare in funzione della ram
+    shuffle_buffer_batches: int = 256,
     seed: int = 42,
 ) -> tf.data.Dataset:
-    """
-    Legge un file Parquet in streaming per row group.
-
-    PyArrow legge un row group alla volta (default ~200k righe):
-    - Mai più di un row group in RAM
-    - Solo le colonne necessarie vengono deserializzate
-
-    shuffle_row_groups=True: mescola l'ordine dei row group a ogni chiamata
-    del generatore (cioè a ogni epoca). Non è uno shuffle globale, ma è
-    molto più efficace dello shuffle CSV perché i row group sono stati
-    scritti già con distribuzione spaziale diversa dallo split deterministico.
-    """
+    
     all_cols = INPUT_COLS + output_cols
-    n_in  = len(INPUT_COLS)
+    n_in = len(INPUT_COLS)
     n_out = len(output_cols)
 
-    n_row_groups = pq.ParquetFile(parquet_path).metadata.num_row_groups
+    output_signature = (
+        tf.TensorSpec(shape=(None, n_in),  dtype=tf.float32),
+        tf.TensorSpec(shape=(None, n_out), dtype=tf.float32),
+    )
+
+    def _record_batch_to_numpy(record_batch) -> np.ndarray:
+        schema = record_batch.schema
+        cols = []
+        for col_name in all_cols:
+            col_idx = schema.get_field_index(col_name)
+            arr = record_batch.column(col_idx).to_numpy(zero_copy_only=False)
+            cols.append(np.asarray(arr, dtype=np.float32))
+        return np.stack(cols, axis=1)
 
     def _generator():
-        # Apri il file: ogni worker ha il suo handle
         pf = pq.ParquetFile(parquet_path)
-        rg_indices = list(range(n_row_groups))
-        if shuffle_row_groups:
-            random.shuffle(rg_indices)
+        rng = np.random.default_rng(seed)
+        carry = None
 
-        for rg_idx in rg_indices:
-            table = pf.read_row_group(rg_idx, columns=all_cols)
-            arr   = table.to_pydict()
-            data  = np.column_stack(
-                [np.asarray(arr[c], dtype=np.float32) for c in all_cols]
-            )
-            np.random.shuffle(data)
-            for i in range(0, len(data), batch_size):
-                chunk = data[i:i + batch_size]
-                if len(chunk) == batch_size:  # scarta l'ultimo batch incompleto
-                    yield chunk
-    out_sig = tf.TensorSpec(shape=(batch_size, n_in + n_out), dtype=tf.float32)
+        for record_batch in pf.iter_batches(
+            batch_size=reader_batch_rows,
+            columns=all_cols,
+            use_threads=True,
+        ):
+            data = _record_batch_to_numpy(record_batch)
 
-    ds = tf.data.Dataset.from_generator(_generator, output_signature=out_sig)
-    ds = ds.map(
-        lambda batch: (batch[:, :n_in], batch[:, n_in:]),
-        num_parallel_calls=tf.data.AUTOTUNE,
+            if shuffle_row_groups:
+                data = data[rng.permutation(len(data))]
+
+            if carry is not None:
+                data = np.concatenate([carry, data], axis=0)
+                carry = None
+
+            n_full = (len(data) // batch_size) * batch_size
+            if n_full == 0:
+                carry = data
+                continue
+
+            full = data[:n_full]
+            carry = data[n_full:] if n_full < len(data) else None
+
+            x = full[:, :n_in]
+            y = full[:, n_in:]
+
+            for i in range(0, n_full, batch_size):
+                yield x[i:i + batch_size], y[i:i + batch_size]
+        if carry is not None and len(carry) > 0:
+            x = carry[:, :n_in]
+            y = carry[:, n_in:]
+            yield x, y  # batch più piccolo, ma non perso
+
+    ds = tf.data.Dataset.from_generator(
+        _generator,
+        output_signature=output_signature,
     )
-    ds = ds.prefetch(tf.data.AUTOTUNE)
 
+    if shuffle_buffer_batches and shuffle_buffer_batches > 1:
+        ds = ds.shuffle(
+            buffer_size=shuffle_buffer_batches,
+            seed=seed,
+            reshuffle_each_iteration=True,
+        )
+
+    options = tf.data.Options()
+    options.deterministic = False
+    ds = ds.with_options(options)
+
+    ds = ds.prefetch(tf.data.AUTOTUNE)
     return ds
 
+def count_samples_parquet(parquet_path: str) -> int:
+    pf = pq.ParquetFile(parquet_path)
+    return pf.metadata.num_rows
 
 # ---------------------------------------------------------------------------
 # Architettura
 # ---------------------------------------------------------------------------
+
+class QuatTo6D(tf.keras.layers.Layer):
+    """
+    Input:  [..., 7]  →  (x, y, z, qx, qy, qz, qw)
+    Output: [..., 9]  →  (x, y, z, r00, r10, r20, r01, r11, r21)
+    Le prime due colonne della matrice di rotazione = rappresentazione 6D continua.
+    """
+    def call(self, x, training=False):
+        pos = x[..., :3]                      # xyz
+        q   = x[..., 3:]                      # qx, qy, qz, qw
+
+        # Normalizza il quaternione (safety, nel caso non sia unitario)
+        q = tf.math.l2_normalize(q, axis=-1)
+        qx, qy, qz, qw = q[...,0], q[...,1], q[...,2], q[...,3]
+
+        # Prima colonna della matrice R
+        r00 = 1 - 2*(qy**2 + qz**2)
+        r10 =     2*(qx*qy + qw*qz)
+        r20 =     2*(qx*qz - qw*qy)
+
+        # Seconda colonna
+        r01 =     2*(qx*qy - qw*qz)
+        r11 = 1 - 2*(qx**2 + qz**2)
+        r21 =     2*(qy*qz + qw*qx)
+
+        six_d = tf.stack([r00, r10, r20, r01, r11, r21], axis=-1)
+        return tf.concat([pos, six_d], axis=-1)   # shape [..., 9]
+    
+    def get_config(self):
+        return super().get_config() 
+    
+class GaussianNoise(tf.keras.layers.Layer):
+    def __init__(self, stddev: float = 0.01, **kwargs):
+        super().__init__(**kwargs)
+        self.stddev = stddev
+
+    def call(self, x, training=None):
+        def noisy():
+            return x + tf.random.normal(tf.shape(x), stddev=self.stddev)
+        return tf.keras.backend.in_train_phase(noisy, x, training=training)
+
+    def get_config(self):
+        cfg = super().get_config()
+        cfg["stddev"] = self.stddev
+        return cfg
+    
+def ik_loss(y_true, y_pred):
+    sin_p, cos_p = y_pred[:, 0::2], y_pred[:, 1::2]
+    norm = tf.sqrt(sin_p**2 + cos_p**2 + 1e-8) # norma del vettore (sin, cos) per ogni giunto (1e-8 per non dividere per zero)
+    #se la rete predice valori vicini a zero (es. sin=0.001, cos=0.001), la norm ≈ 0.0001, quindi (norm - 1)² ≈ 1.0 
+    # che è enorme rispetto alla loss angolare che sta in [0, 2]
+    clamped_norm = tf.maximum(norm, 0.1) 
+    sin_p_n, cos_p_n = sin_p / clamped_norm, cos_p / clamped_norm # normalizza il vettore predetto per renderlo unitario
+
+    sin_t, cos_t = y_true[:, 0::2], y_true[:, 1::2] # sin e cos veri (già normalizzati, dovrebbero essere unitari)
+
+    # Loss angolare (stabile)
+    angular = tf.reduce_mean(1.0 - (sin_t*sin_p_n + cos_t*cos_p_n)) # equivalente a cos(errore_angolare) 
+
+    unit_pen = tf.reduce_mean((norm - 1.0)**2) # penalizza deviazioni dalla norma 1 (spinge verso sin²+cos²=1. Usa la norma non clampata
+
+    return angular + 0.05 * unit_pen # 0.05: peso della penalità unità (da regolare)
 
 def build_model(
     input_dim: int,
@@ -179,10 +261,13 @@ def build_model(
     weight_decay: float,
     loss_name: str,
     huber_delta: float,
+    first_decay_steps: int = 1000,
 ) -> tf.keras.Model:
     inp  = tf.keras.Input(shape=(input_dim,), name="target_pose")
     norm = MinMaxNormalization(scale=INPUT_SCALE, name="input_norm")
     x    = norm(inp)
+    x    = QuatTo6D(trainable=False, name="quat_to_6d")(x)
+    x    = GaussianNoise(stddev=0.01, trainable=False, name="input_noise")(x)
 
     for i, units in enumerate(hidden):
         residual = x
@@ -198,12 +283,18 @@ def build_model(
     out   = tf.keras.layers.Dense(output_dim, name="output")(x)
     model = tf.keras.Model(inp, out)
 
-    if hasattr(tf.keras.optimizers, "AdamW") and weight_decay > 0:
-        opt = tf.keras.optimizers.AdamW(learning_rate=lr, weight_decay=weight_decay)
-    else:
-        opt = tf.keras.optimizers.Adam(learning_rate=lr)
+    schedule = tf.keras.optimizers.schedules.CosineDecayRestarts(
+        initial_learning_rate=lr,             # usa args.lr, non hardcoded
+        first_decay_steps=first_decay_steps,  # da passare come parametro
+        t_mul=2.0, m_mul=0.9
+    )
 
-    loss = tf.keras.losses.Huber(delta=huber_delta) if loss_name == "huber" else "mse"
+    if hasattr(tf.keras.optimizers, "AdamW") and weight_decay > 0:
+        opt = tf.keras.optimizers.AdamW(learning_rate=schedule, weight_decay=weight_decay)
+    else:
+        opt = tf.keras.optimizers.Adam(learning_rate=schedule)
+
+    loss = ik_loss if loss_name == "ik" else tf.keras.losses.Huber(delta=huber_delta) if loss_name == "huber" else "mse"
     model.compile(optimizer=opt, loss=loss, metrics=["mae"])
     return model
 
@@ -301,23 +392,27 @@ def parse_args() -> argparse.Namespace:
                    help="Directory con train.parquet, val.parquet, test.parquet")
     p.add_argument("--model_dir",    default="ik_model")
     p.add_argument("--epochs",       type=int,   default=200)
-    p.add_argument("--batch_size",   type=int,   default=4096)
-    p.add_argument("--hidden",       type=int,   nargs="+", default=[256, 256, 256, 128])
-    p.add_argument("--dropout",      type=float, default=0.05)
-    p.add_argument("--lr",           type=float, default=5e-4)
-    p.add_argument("--weight_decay", type=float, default=1e-5)
-    p.add_argument("--loss",         choices=["mse", "huber"], default="huber")
+    p.add_argument("--batch_size",   type=int,   default=512)
+    p.add_argument("--hidden",       type=int,   nargs="+", default=[1024, 512, 512, 256])
+    p.add_argument("--dropout",      type=float, default=0.15)
+    p.add_argument("--lr", type=float, default=1e-3,
+               help="Learning rate iniziale per CosineDecayRestarts")
+    p.add_argument("--weight_decay", type=float, default=1e-4)
+    p.add_argument("--loss",         choices=["mse", "huber", "ik"], default="ik")
     p.add_argument("--huber_delta",  type=float, default=1.0)
     p.add_argument("--shuffle_row_groups", action="store_true",
                    help="Mescola l'ordine dei row group a ogni epoca (consigliato)")
     p.add_argument("--early_stop_patience",  type=int,   default=20)
     p.add_argument("--early_stop_min_delta", type=float, default=1e-5)
-    p.add_argument("--reduce_lr_patience",   type=int,   default=6)
-    p.add_argument("--reduce_lr_factor",     type=float, default=0.5)
-    p.add_argument("--min_lr",               type=float, default=1e-6)
     p.add_argument("--loss_target",          type=float, default=0.0)
     p.add_argument("--resume", action="store_true",
                help="Riprendi dal checkpoint migliore esistente in model_dir/checkpoints/")
+    p.add_argument("--reader_batch_rows", type=int, default=131072,
+                   help="Numero righe per record batch Arrow durante la lettura")
+    p.add_argument("--train_shuffle_buffer_batches", type=int, default=256,
+                   help="Buffer shuffle tf.data per il train, espresso in batch")
+    p.add_argument("--eval_shuffle_buffer_batches", type=int, default=1,
+                   help="Buffer shuffle tf.data per val/test; 1 = disabilitato")
     return p.parse_args()
 
 
@@ -355,11 +450,55 @@ def main() -> int:
     # ------------------------------------------------------------------
     # Dataset
     # ------------------------------------------------------------------
-    common = dict(output_cols=output_cols, batch_size=args.batch_size)
+    common = dict(
+        output_cols=output_cols,
+        batch_size=args.batch_size,
+        reader_batch_rows=args.reader_batch_rows,
+    )
 
-    train_ds = make_parquet_dataset(train_path, shuffle_row_groups=args.shuffle_row_groups, seed=42, **common).repeat()
-    val_ds   = make_parquet_dataset(val_path,  shuffle_row_groups=False, seed=42, **common)
-    test_ds  = make_parquet_dataset(test_path, shuffle_row_groups=False, seed=42, **common)
+    train_rows = count_samples_parquet(train_path)
+    val_rows   = count_samples_parquet(val_path)
+    test_rows  = count_samples_parquet(test_path)
+
+    train_steps = train_rows // args.batch_size
+    val_steps   = val_rows // args.batch_size
+    test_steps  = test_rows // args.batch_size
+
+    if train_steps == 0 or val_steps == 0 or test_steps == 0:
+        raise ValueError(
+            f"Dataset troppo piccolo rispetto al batch_size={args.batch_size}: "
+            f"train_steps={train_steps}, val_steps={val_steps}, test_steps={test_steps}"
+        )
+
+    train_ds = make_parquet_dataset(
+        train_path,
+        shuffle_row_groups=args.shuffle_row_groups,
+        shuffle_buffer_batches=args.train_shuffle_buffer_batches,
+        seed=42,
+        **common,
+    ).repeat()
+
+    val_ds = make_parquet_dataset(
+        val_path,
+        shuffle_row_groups=False,
+        shuffle_buffer_batches=args.eval_shuffle_buffer_batches,
+        seed=42,
+        **common,
+    )
+
+    test_ds = make_parquet_dataset(
+        test_path,
+        shuffle_row_groups=False,
+        shuffle_buffer_batches=args.eval_shuffle_buffer_batches,
+        seed=42,
+        **common,
+    )
+
+    print(
+        f"Train rows={train_rows:,}  steps/epoch={train_steps:,} | "
+        f"Val rows={val_rows:,}  val_steps={val_steps:,} | "
+        f"Test rows={test_rows:,}  test_steps={test_steps:,}"
+    )
 
     # ------------------------------------------------------------------
     # Modello
@@ -370,17 +509,14 @@ def main() -> int:
         print(f"\nRipresa da checkpoint: {ckpt_path}")
         model = tf.keras.models.load_model(
             ckpt_path,
-            custom_objects={"MinMaxNormalization": MinMaxNormalization},
+            custom_objects={
+                "MinMaxNormalization": MinMaxNormalization,
+                "QuatTo6D":            QuatTo6D,
+                "GaussianNoise":       GaussianNoise,
+                "ik_loss":             ik_loss,
+            },
         )
-        metadata_path = os.path.join(args.model_dir, "metadata.json")
-        if os.path.isfile(metadata_path):
-            with open(metadata_path) as f:
-                saved_meta = json.load(f)
-            resume_lr = saved_meta.get("lr", args.lr)
-        else:
-            resume_lr = args.lr
-        print(f"  LR impostato a: {resume_lr}")
-        tf.keras.backend.set_value(model.optimizer.learning_rate, resume_lr)
+
     else:
         print("\nCostruzione modello da zero...")
         model = build_model(
@@ -392,6 +528,7 @@ def main() -> int:
             weight_decay=args.weight_decay,
             loss_name=args.loss,
             huber_delta=args.huber_delta,
+            first_decay_steps=train_steps * 50,
         )
 
     model.summary()
@@ -404,15 +541,13 @@ def main() -> int:
     os.makedirs(ckpt_dir, exist_ok=True)
     monitor = "val_loss"
 
+    
+
     callbacks = [
         tf.keras.callbacks.TerminateOnNaN(),
         tf.keras.callbacks.ModelCheckpoint(
             filepath=os.path.join(ckpt_dir, "best_model.keras"),
             monitor=monitor, save_best_only=True, verbose=1,
-        ),
-        tf.keras.callbacks.ReduceLROnPlateau(
-            monitor=monitor, factor=args.reduce_lr_factor,
-            patience=args.reduce_lr_patience, min_lr=args.min_lr, verbose=1,
         ),
         tf.keras.callbacks.EarlyStopping(
             monitor=monitor, patience=args.early_stop_patience,
@@ -432,6 +567,7 @@ def main() -> int:
         train_ds,
         validation_data=val_ds,
         epochs=args.epochs,
+        steps_per_epoch=train_steps,
         callbacks=callbacks,
         verbose=1,
     )
@@ -450,9 +586,10 @@ def main() -> int:
         "dropout":        args.dropout,
         "loss":           args.loss,
         "huber_delta":    args.huber_delta if args.loss == "huber" else None,
-        "lr": float(tf.keras.backend.get_value(model.optimizer.learning_rate)),
+        "lr_initial": args.lr,
         "batch_size":     args.batch_size,
         "weight_decay":   args.weight_decay,
+        "epochs_trained": len(history.history["loss"]),
     }
     with open(os.path.join(args.model_dir, "metadata.json"), "w") as f:
         json.dump(metadata, f, indent=2)
@@ -462,6 +599,10 @@ def main() -> int:
     # ------------------------------------------------------------------
     val_metrics  = evaluate_set("Validation", model, val_ds,  output_cols)
     test_metrics = evaluate_set("Test",        model, test_ds, output_cols)
+
+    #rispetto al numero di batch completi, potrebbe essere la stessa cosa ma vediamo
+    # val_metrics  = evaluate_set("Validation",  model, val_ds.take(val_steps),  output_cols)
+    # test_metrics = evaluate_set("Test",        model, test_ds.take(test_steps), output_cols)
 
     report = {
         "config":     vars(args),
