@@ -226,9 +226,9 @@ class GaussianNoise(tf.keras.layers.Layer):
         self.stddev = stddev
 
     def call(self, x, training=None):
-        def noisy():
+        if training:
             return x + tf.random.normal(tf.shape(x), stddev=self.stddev)
-        return tf.keras.backend.in_train_phase(noisy, x, training=training)
+        return x
 
     def get_config(self):
         cfg = super().get_config()
