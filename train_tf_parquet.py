@@ -315,6 +315,12 @@ class StopOnLossTarget(tf.keras.callbacks.Callback):
             print(f"\nEpoch {epoch+1}: {self.monitor}={val:.6f} < {self.loss_target:.6f} → stop.")
             self.model.stop_training = True
 
+class LRLogger(tf.keras.callbacks.Callback):
+    def on_epoch_end(self, epoch, logs=None):
+        lr = float(self.model.optimizer.learning_rate(
+            self.model.optimizer.iterations
+        ))
+        print(f"  LR attuale: {lr:.2e}")
 # class CheckpointEveryN(tf.keras.callbacks.ModelCheckpoint):
 #     def __init__(self, every_n: int, *args, **kwargs):
 #         super().__init__(*args, **kwargs)
@@ -544,6 +550,7 @@ def main() -> int:
     
 
     callbacks = [
+        LRLogger(),
         tf.keras.callbacks.TerminateOnNaN(),
         tf.keras.callbacks.ModelCheckpoint(
             filepath=os.path.join(ckpt_dir, "best_model.keras"),
