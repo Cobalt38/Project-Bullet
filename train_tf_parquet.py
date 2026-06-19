@@ -237,18 +237,15 @@ class GaussianNoise(tf.keras.layers.Layer):
     
 def ik_loss(y_true, y_pred):
     sin_p, cos_p = y_pred[:, 0::2], y_pred[:, 1::2]
-    norm = tf.sqrt(sin_p**2 + cos_p**2 + 1e-8) # norma del vettore (sin, cos) per ogni giunto (1e-8 per non dividere per zero)
-    #se la rete predice valori vicini a zero (es. sin=0.001, cos=0.001), la norm ≈ 0.0001, quindi (norm - 1)² ≈ 1.0 
-    # che è enorme rispetto alla loss angolare che sta in [0, 2]
-    clamped_norm = tf.maximum(norm, 0.1) 
-    sin_p_n, cos_p_n = sin_p / clamped_norm, cos_p / clamped_norm # normalizza il vettore predetto per renderlo unitario
+    norm = tf.sqrt(sin_p**2 + cos_p**2) # norma del vettore (sin, cos) per ogni giunto
+    sin_p_n, cos_p_n = sin_p / (norm + 1e-8), cos_p / (norm + 1e-8) # normalizza il vettore predetto per renderlo unitario
 
     sin_t, cos_t = y_true[:, 0::2], y_true[:, 1::2] # sin e cos veri (già normalizzati, dovrebbero essere unitari)
 
-    # Loss angolare (stabile)
-    angular = tf.reduce_mean(1.0 - (sin_t*sin_p_n + cos_t*cos_p_n)) # equivalente a cos(errore_angolare) 
+    # Loss angolare (stabile) = cos(erroreAngolare). Per due vettori unitari, il prodotto scalare è cos(Δθ)
+    angular = tf.reduce_mean(1.0 - (sin_t*sin_p_n + cos_t*cos_p_n)) # se t e p sono uguali hai sin^2*cos^2 = 1 e quindi errore = 0
 
-    unit_pen = tf.reduce_mean((norm - 1.0)**2) # penalizza deviazioni dalla norma 1 (spinge verso sin²+cos²=1. Usa la norma non clampata
+    unit_pen = tf.reduce_mean((norm - 1.0)**2) # penalizza deviazioni dalla norma 1 (spinge verso sin²+cos²=1.
 
     return angular + 0.05 * unit_pen # 0.05: peso della penalità unità (da regolare)
 
@@ -404,7 +401,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--lr", type=float, default=1e-3,
                help="Learning rate iniziale per CosineDecayRestarts")
     p.add_argument("--weight_decay", type=float, default=1e-4)
-    p.add_argument("--loss",         choices=["mse", "huber", "ik"], default="ik")
+    p.add_argument("--loss",         choices=["mse", "huber", "ik"], default="huber")
     p.add_argument("--huber_delta",  type=float, default=1.0)
     p.add_argument("--shuffle_row_groups", action="store_true",
                    help="Mescola l'ordine dei row group a ogni epoca (consigliato)")
@@ -534,7 +531,7 @@ def main() -> int:
             weight_decay=args.weight_decay,
             loss_name=args.loss,
             huber_delta=args.huber_delta,
-            first_decay_steps=train_steps * 50,
+            first_decay_steps=train_steps * 5,
         )
 
     model.summary()
