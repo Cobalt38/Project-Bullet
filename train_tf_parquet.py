@@ -3,7 +3,7 @@
 Input  : target_x, target_y, target_z, hand_quat_qx/qy/qz/qw  (7 col.)
 Output : *_sin / *_cos per ogni giunto
 
---batch_size 4096 --reader_batch_rows 131072 --train_shuffle_buffer_batches 256 --eval_shuffle_buffer_batches 1  --shuffle_row_groups
+Virtual Split Edition: accetta un unico file .parquet e lo splitta a runtime usando i Row Groups.
 """
 
 import argparse
@@ -26,16 +26,10 @@ INPUT_COLS = [
     "hand_quat_qx", "hand_quat_qy", "hand_quat_qz", "hand_quat_qw",
 ]
 
-# Normalizzazione min-max fissa: scala per portare gli input in [-1, 1]
-# x, y, z ∈ [-2, 2]  →  dividi per 2
-# qx,qy,qz,qw ∈ [-1, 1]  →  già normalizzati (dividi per 1)
-# Gli output (sin/cos) sono già in [-1,1] per definizione: nessuna normalizzazione.
 INPUT_SCALE = np.array([2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0], dtype=np.float32)
 
 
 def detect_output_cols(parquet_path: str) -> List[str]:
-    """Legge solo lo schema del Parquet (zero righe) e restituisce
-    le colonne output in ordine [joint1_sin, joint1_cos, joint2_sin, ...]."""
     schema = pq.read_schema(parquet_path)
     sin_cols = [n for n in schema.names if n.endswith("_sin")]
     cos_cols = [n for n in schema.names if n.endswith("_cos")]
@@ -46,14 +40,12 @@ def detect_output_cols(parquet_path: str) -> List[str]:
             f"Colonne disponibili: {schema.names}"
         )
 
-    # Verifica che ogni _sin abbia il corrispondente _cos
     sin_joints = [c[:-4] for c in sin_cols]
     cos_joints = [c[:-4] for c in cos_cols]
     missing = set(sin_joints) ^ set(cos_joints)
     if missing:
         raise ValueError(f"Colonne sin/cos non appaiate per i giunti: {missing}")
 
-    # Restituisce in ordine alternato: sin, cos, sin, cos, ...
     cols = []
     for joint in sin_joints:
         cols.append(f"{joint}_sin")
@@ -62,16 +54,10 @@ def detect_output_cols(parquet_path: str) -> List[str]:
 
 
 # ---------------------------------------------------------------------------
-# Normalizzazione (layer senza pesi da apprendere o aggiornare)
+# Normalizzazione
 # ---------------------------------------------------------------------------
 
 class MinMaxNormalization(tf.keras.layers.Layer):
-    """
-    Normalizza gli input con scala fissa (range noti a priori).
-    Non ha parametri trainable né variabili aggiornabili.
-    x_norm = x / scale
-    """
-
     def __init__(self, scale: np.ndarray, **kwargs):
         super().__init__(trainable=False, **kwargs)
         self._scale = scale.astype(np.float32)
@@ -95,15 +81,16 @@ class MinMaxNormalization(tf.keras.layers.Layer):
 
 
 # ---------------------------------------------------------------------------
-# Dataset Parquet → tf.data
+# Dataset Parquet → tf.data (Con supporto a Row Groups specifici)
 # ---------------------------------------------------------------------------
 
 def make_parquet_dataset(
     parquet_path: str,
     output_cols: List[str],
     batch_size: int,
-    shuffle_row_groups: bool = True, # da provare anche con false
-    reader_batch_rows: int = 131072, # boh da provare in funzione della ram
+    row_groups: List[int],
+    shuffle_row_groups: bool = True,
+    reader_batch_rows: int = 131072,
     shuffle_buffer_batches: int = 256,
     seed: int = 42,
 ) -> tf.data.Dataset:
@@ -131,13 +118,20 @@ def make_parquet_dataset(
         rng = np.random.default_rng(seed)
         carry = None
 
+        # Crea una copia locale per poter rimescolare l'ordine dei blocchi a ogni epoca
+        active_groups = list(row_groups)
+        if shuffle_row_groups:
+            rng.shuffle(active_groups)
+
         for record_batch in pf.iter_batches(
             batch_size=reader_batch_rows,
             columns=all_cols,
             use_threads=True,
+            row_groups=active_groups, # Chiediamo a PyArrow solo i nostri gruppi assegnati
         ):
             data = _record_batch_to_numpy(record_batch)
 
+            # Shuffle intra-batch (dentro le righe caricate)
             if shuffle_row_groups:
                 data = data[rng.permutation(len(data))]
 
@@ -158,10 +152,11 @@ def make_parquet_dataset(
 
             for i in range(0, n_full, batch_size):
                 yield x[i:i + batch_size], y[i:i + batch_size]
+                
         if carry is not None and len(carry) > 0:
             x = carry[:, :n_in]
             y = carry[:, n_in:]
-            yield x, y  # batch più piccolo, ma non perso
+            yield x, y
 
     ds = tf.data.Dataset.from_generator(
         _generator,
@@ -178,44 +173,31 @@ def make_parquet_dataset(
     options = tf.data.Options()
     options.deterministic = False
     ds = ds.with_options(options)
-
     ds = ds.prefetch(tf.data.AUTOTUNE)
     return ds
 
-def count_samples_parquet(parquet_path: str) -> int:
-    pf = pq.ParquetFile(parquet_path)
-    return pf.metadata.num_rows
 
 # ---------------------------------------------------------------------------
-# Architettura
+# Architettura & Loss
 # ---------------------------------------------------------------------------
 
 class QuatTo6D(tf.keras.layers.Layer):
-    """
-    Input:  [..., 7]  →  (x, y, z, qx, qy, qz, qw)
-    Output: [..., 9]  →  (x, y, z, r00, r10, r20, r01, r11, r21)
-    Le prime due colonne della matrice di rotazione = rappresentazione 6D continua.
-    """
     def call(self, x, training=False):
-        pos = x[..., :3]                      # xyz
-        q   = x[..., 3:]                      # qx, qy, qz, qw
-
-        # Normalizza il quaternione (safety, nel caso non sia unitario)
+        pos = x[..., :3]
+        q   = x[..., 3:]
         q = tf.math.l2_normalize(q, axis=-1)
         qx, qy, qz, qw = q[...,0], q[...,1], q[...,2], q[...,3]
 
-        # Prima colonna della matrice R
         r00 = 1 - 2*(qy**2 + qz**2)
         r10 =     2*(qx*qy + qw*qz)
         r20 =     2*(qx*qz - qw*qy)
 
-        # Seconda colonna
         r01 =     2*(qx*qy - qw*qz)
         r11 = 1 - 2*(qx**2 + qz**2)
         r21 =     2*(qy*qz + qw*qx)
 
         six_d = tf.stack([r00, r10, r20, r01, r11, r21], axis=-1)
-        return tf.concat([pos, six_d], axis=-1)   # shape [..., 9]
+        return tf.concat([pos, six_d], axis=-1)
     
     def get_config(self):
         return super().get_config() 
@@ -237,17 +219,12 @@ class GaussianNoise(tf.keras.layers.Layer):
     
 def ik_loss(y_true, y_pred):
     sin_p, cos_p = y_pred[:, 0::2], y_pred[:, 1::2]
-    norm = tf.sqrt(sin_p**2 + cos_p**2) # norma del vettore (sin, cos) per ogni giunto
-    sin_p_n, cos_p_n = sin_p / (norm + 1e-8), cos_p / (norm + 1e-8) # normalizza il vettore predetto per renderlo unitario
-
-    sin_t, cos_t = y_true[:, 0::2], y_true[:, 1::2] # sin e cos veri (già normalizzati, dovrebbero essere unitari)
-
-    # Loss angolare (stabile) = cos(erroreAngolare). Per due vettori unitari, il prodotto scalare è cos(Δθ)
-    angular = tf.reduce_mean(1.0 - (sin_t*sin_p_n + cos_t*cos_p_n)) # se t e p sono uguali hai sin^2*cos^2 = 1 e quindi errore = 0
-
-    unit_pen = tf.reduce_mean((norm - 1.0)**2) # penalizza deviazioni dalla norma 1 (spinge verso sin²+cos²=1.
-
-    return angular + 0.05 * unit_pen # 0.05: peso della penalità unità (da regolare)
+    norm = tf.sqrt(sin_p**2 + cos_p**2)
+    sin_p_n, cos_p_n = sin_p / (norm + 1e-8), cos_p / (norm + 1e-8)
+    sin_t, cos_t = y_true[:, 0::2], y_true[:, 1::2]
+    angular = tf.reduce_mean(1.0 - (sin_t*sin_p_n + cos_t*cos_p_n))
+    unit_pen = tf.reduce_mean((norm - 1.0)**2)
+    return angular + 0.05 * unit_pen
 
 def build_model(
     input_dim: int,
@@ -281,8 +258,8 @@ def build_model(
     model = tf.keras.Model(inp, out)
 
     schedule = tf.keras.optimizers.schedules.CosineDecayRestarts(
-        initial_learning_rate=lr,             # usa args.lr, non hardcoded
-        first_decay_steps=first_decay_steps,  # da passare come parametro
+        initial_learning_rate=lr,
+        first_decay_steps=first_decay_steps,
         t_mul=2.0, m_mul=0.9
     )
 
@@ -323,15 +300,6 @@ class LRLogger(tf.keras.callbacks.Callback):
         if logs is not None:
             logs["lr"] = lr_val
 
-
-# class CheckpointEveryN(tf.keras.callbacks.ModelCheckpoint):
-#     def __init__(self, every_n: int, *args, **kwargs):
-#         super().__init__(*args, **kwargs)
-#         self.every_n = every_n
-
-#     def on_epoch_end(self, epoch, logs=None):
-#         if (epoch + 1) % self.every_n == 0:
-#             super().on_epoch_end(epoch, logs)
 
 # ---------------------------------------------------------------------------
 # Valutazione finale
@@ -396,16 +364,15 @@ def evaluate_set(
 # ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="IK trainer – dataset Parquet")
-    p.add_argument("--parquet_dir",  required=True,
-                   help="Directory con train.parquet, val.parquet, test.parquet")
+    p = argparse.ArgumentParser(description="IK trainer – dataset Parquet unico con Virtual Split")
+    p.add_argument("--parquet_file", required=True,
+                   help="Path al file unico dataset.parquet")
     p.add_argument("--model_dir",    default="ik_model")
     p.add_argument("--epochs",       type=int,   default=200)
     p.add_argument("--batch_size",   type=int,   default=512)
     p.add_argument("--hidden",       type=int,   nargs="+", default=[1024, 512, 512, 256])
     p.add_argument("--dropout",      type=float, default=0.1)
-    p.add_argument("--lr", type=float, default=1e-3,
-               help="Learning rate iniziale per CosineDecayRestarts")
+    p.add_argument("--lr",           type=float, default=1e-3, help="Learning rate iniziale")
     p.add_argument("--weight_decay", type=float, default=1e-4)
     p.add_argument("--loss",         choices=["mse", "huber", "ik"], default="huber")
     p.add_argument("--huber_delta",  type=float, default=1.0)
@@ -414,14 +381,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--early_stop_patience",  type=int,   default=75)
     p.add_argument("--early_stop_min_delta", type=float, default=1e-4)
     p.add_argument("--loss_target",          type=float, default=0.0)
-    p.add_argument("--resume", action="store_true",
-               help="Riprendi dal checkpoint migliore esistente in model_dir/checkpoints/")
-    p.add_argument("--reader_batch_rows", type=int, default=131072,
-                   help="Numero righe per record batch Arrow durante la lettura")
-    p.add_argument("--train_shuffle_buffer_batches", type=int, default=256,
-                   help="Buffer shuffle tf.data per il train, espresso in batch")
-    p.add_argument("--eval_shuffle_buffer_batches", type=int, default=1,
-                   help="Buffer shuffle tf.data per val/test; 1 = disabilitato")
+    p.add_argument("--resume", action="store_true", help="Riprendi dal checkpoint migliore")
+    p.add_argument("--reader_batch_rows", type=int, default=131072)
+    p.add_argument("--train_shuffle_buffer_batches", type=int, default=256)
+    p.add_argument("--eval_shuffle_buffer_batches", type=int, default=1)
+    
+    # Parametri aggiunti per gestire lo split virtuale
+    p.add_argument("--train_prop", type=float, default=0.8, help="Proporzione di Row Groups per il Training")
+    p.add_argument("--val_prop", type=float, default=0.1, help="Proporzione di Row Groups per la Validation")
+    p.add_argument("--test_prop", type=float, default=0.1, help="Proporzione di Row Groups per il Test")
+    p.add_argument("--split_seed", type=int, default=42, help="Seed deterministico per lo split iniziale dei gruppi")
+    
     return p.parse_args()
 
 
@@ -431,56 +401,76 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    print("IK Trainer – Parquet edition")
+    print("IK Trainer – Virtual Split Edition")
     for k, v in vars(args).items():
         print(f"  {k}: {v}")
     print()
 
-    parquet_dir  = Path(args.parquet_dir)
-    train_path   = str(parquet_dir / "train.parquet")
-    val_path     = str(parquet_dir / "val.parquet")
-    test_path    = str(parquet_dir / "test.parquet")
+    if not os.path.isfile(args.parquet_file):
+        raise FileNotFoundError(f"File dataset unico non trovato: {args.parquet_file}")
 
-    for p in [train_path, val_path, test_path]:
-        if not os.path.isfile(p):
-            raise FileNotFoundError(f"File non trovato: {p}")
-
-    output_cols = detect_output_cols(train_path)
+    output_cols = detect_output_cols(args.parquet_file)
     n_in  = len(INPUT_COLS)
     n_out = len(output_cols)
     print(f"Input  ({n_in}): {INPUT_COLS}")
     print(f"Output ({n_out}): {output_cols}")
 
-    # Row group info
-    pf = pq.ParquetFile(train_path)
-    print(f"Train: {pf.metadata.num_row_groups} row group(s), "
-          f"{pf.metadata.num_rows:,} righe")
+    # Lettura dei metadati dei Row Groups
+    pf = pq.ParquetFile(args.parquet_file)
+    total_groups = pf.metadata.num_row_groups
+    print(f"Dataset unico rilevato: {total_groups} row group(s), {pf.metadata.num_rows:,} righe totali.")
+
+    if total_groups < 3:
+        raise ValueError(
+            f"Il file parquet ha solo {total_groups} row groups. "
+            "Impossibile effettuare uno split virtuale efficiente. Genera il file con un 'row_group_size' più piccolo."
+        )
 
     # ------------------------------------------------------------------
-    # Dataset
+    # Calcolo dello Split Virtuale basato sui Row Groups
     # ------------------------------------------------------------------
-    common = dict(
-        output_cols=output_cols,
-        batch_size=args.batch_size,
-        reader_batch_rows=args.reader_batch_rows,
-    )
+    all_group_indices = list(range(total_groups))
+    # Usiamo un generatore ad-hoc isolato per non interferire con gli altri seed
+    rng_splitter = random.Random(args.split_seed)
+    rng_splitter.shuffle(all_group_indices)
 
-    train_rows = count_samples_parquet(train_path)
-    val_rows   = count_samples_parquet(val_path)
-    test_rows  = count_samples_parquet(test_path)
+    n_val = max(1, int(total_groups * args.val_prop))
+    n_test = max(1, int(total_groups * args.test_prop))
+    n_train = total_groups - n_val - n_test
+
+    train_groups = all_group_indices[:n_train]
+    val_groups   = all_group_indices[n_train : n_train + n_val]
+    test_groups  = all_group_indices[n_train + n_val :]
+
+    # Calcolo esatto del numero di righe per ogni split interrogando i metadati
+    train_rows = sum(pf.metadata.row_group(g).num_rows for g in train_groups)
+    val_rows   = sum(pf.metadata.row_group(g).num_rows for g in val_groups)
+    test_rows  = sum(pf.metadata.row_group(g).num_rows for g in test_groups)
 
     train_steps = train_rows // args.batch_size
     val_steps   = val_rows // args.batch_size
     test_steps  = test_rows // args.batch_size
 
+    print(f"\n--- Bilanciamento Split Virtuale ---")
+    print(f"Train : {len(train_groups)} gruppi, {train_rows:,} righe, {train_steps:,} steps/epoch")
+    print(f"Val   : {len(val_groups)} gruppi, {val_rows:,} righe, {val_steps:,} steps/epoch")
+    print(f"Test  : {len(test_groups)} gruppi, {test_rows:,} righe, {test_steps:,} steps/epoch\n")
+
     if train_steps == 0 or val_steps == 0 or test_steps == 0:
-        raise ValueError(
-            f"Dataset troppo piccolo rispetto al batch_size={args.batch_size}: "
-            f"train_steps={train_steps}, val_steps={val_steps}, test_steps={test_steps}"
-        )
+        raise ValueError("Dataset o split troppo piccoli rispetto al batch_size impostato.")
+
+    # ------------------------------------------------------------------
+    # Dataset Inizializzazione
+    # ------------------------------------------------------------------
+    common = dict(
+        parquet_path=args.parquet_file,
+        output_cols=output_cols,
+        batch_size=args.batch_size,
+        reader_batch_rows=args.reader_batch_rows,
+    )
 
     train_ds = make_parquet_dataset(
-        train_path,
+        row_groups=train_groups,
         shuffle_row_groups=args.shuffle_row_groups,
         shuffle_buffer_batches=args.train_shuffle_buffer_batches,
         seed=42,
@@ -488,7 +478,7 @@ def main() -> int:
     ).repeat()
 
     val_ds = make_parquet_dataset(
-        val_path,
+        row_groups=val_groups,
         shuffle_row_groups=False,
         shuffle_buffer_batches=args.eval_shuffle_buffer_batches,
         seed=42,
@@ -496,17 +486,11 @@ def main() -> int:
     )
 
     test_ds = make_parquet_dataset(
-        test_path,
+        row_groups=test_groups,
         shuffle_row_groups=False,
         shuffle_buffer_batches=args.eval_shuffle_buffer_batches,
         seed=42,
         **common,
-    )
-
-    print(
-        f"Train rows={train_rows:,}  steps/epoch={train_steps:,} | "
-        f"Val rows={val_rows:,}  val_steps={val_steps:,} | "
-        f"Test rows={test_rows:,}  test_steps={test_steps:,}"
     )
 
     # ------------------------------------------------------------------
@@ -525,7 +509,6 @@ def main() -> int:
                 "ik_loss":             ik_loss,
             },
         )
-
     else:
         print("\nCostruzione modello da zero...")
         model = build_model(
@@ -550,8 +533,6 @@ def main() -> int:
     os.makedirs(ckpt_dir, exist_ok=True)
     monitor = "val_loss"
 
-    
-
     callbacks = [
         LRLogger(),
         tf.keras.callbacks.TerminateOnNaN(),
@@ -566,7 +547,6 @@ def main() -> int:
     ]
     if args.loss_target > 0.0:
         callbacks.append(StopOnLossTarget(args.loss_target, monitor=monitor))
-        print(f"Auto-stop quando {monitor} < {args.loss_target}")
 
     # ------------------------------------------------------------------
     # Training
@@ -584,7 +564,7 @@ def main() -> int:
     )
 
     # ------------------------------------------------------------------
-    # Salvataggio
+    # Salvataggio & Reportistica
     # ------------------------------------------------------------------
     model_path = os.path.join(args.model_dir, "model.keras")
     model.save(model_path)
@@ -597,23 +577,22 @@ def main() -> int:
         "dropout":        args.dropout,
         "loss":           args.loss,
         "huber_delta":    args.huber_delta if args.loss == "huber" else None,
-        "lr_initial": args.lr,
+        "lr_initial":     args.lr,
         "batch_size":     args.batch_size,
         "weight_decay":   args.weight_decay,
         "epochs_trained": len(history.history["loss"]),
+        "virtual_split": {
+            "train_groups": len(train_groups),
+            "val_groups": len(val_groups),
+            "test_groups": len(test_groups),
+            "split_seed": args.split_seed
+        }
     }
     with open(os.path.join(args.model_dir, "metadata.json"), "w") as f:
         json.dump(metadata, f, indent=2)
 
-    # ------------------------------------------------------------------
-    # Valutazione
-    # ------------------------------------------------------------------
     val_metrics  = evaluate_set("Validation", model, val_ds,  output_cols)
     test_metrics = evaluate_set("Test",        model, test_ds, output_cols)
-
-    #rispetto al numero di batch completi, potrebbe essere la stessa cosa ma vediamo
-    # val_metrics  = evaluate_set("Validation",  model, val_ds.take(val_steps),  output_cols)
-    # test_metrics = evaluate_set("Test",        model, test_ds.take(test_steps), output_cols)
 
     report = {
         "config":     vars(args),
@@ -625,7 +604,6 @@ def main() -> int:
         json.dump(report, f, indent=2)
 
     print(f"\nModello salvato  → {model_path}")
-    print(f"Metadata         → {os.path.join(args.model_dir, 'metadata.json')}")
     return 0
 
 
