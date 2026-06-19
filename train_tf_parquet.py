@@ -314,11 +314,9 @@ class StopOnLossTarget(tf.keras.callbacks.Callback):
 
 class LRLogger(tf.keras.callbacks.Callback):
     def on_epoch_end(self, epoch, logs=None):
-        lr = tf.keras.backend.get_value(
-            self.model.optimizer.learning_rate(
-                self.model.optimizer.iterations
-            )
-        )
+        lr = float(tf.keras.backend.get_value(
+            self.model.optimizer.lr
+        ))
         print(f"  LR attuale: {lr:.2e}")
 # class CheckpointEveryN(tf.keras.callbacks.ModelCheckpoint):
 #     def __init__(self, every_n: int, *args, **kwargs):
