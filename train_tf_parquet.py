@@ -572,6 +572,7 @@ def main() -> int:
         validation_data=val_ds,
         epochs=args.epochs,
         steps_per_epoch=train_steps,
+        validation_steps=val_steps,
         callbacks=callbacks,
         verbose=1,
     )
