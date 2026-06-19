@@ -403,7 +403,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--epochs",       type=int,   default=200)
     p.add_argument("--batch_size",   type=int,   default=512)
     p.add_argument("--hidden",       type=int,   nargs="+", default=[1024, 512, 512, 256])
-    p.add_argument("--dropout",      type=float, default=0.15)
+    p.add_argument("--dropout",      type=float, default=0.1)
     p.add_argument("--lr", type=float, default=1e-3,
                help="Learning rate iniziale per CosineDecayRestarts")
     p.add_argument("--weight_decay", type=float, default=1e-4)
@@ -411,8 +411,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--huber_delta",  type=float, default=1.0)
     p.add_argument("--shuffle_row_groups", action="store_true",
                    help="Mescola l'ordine dei row group a ogni epoca (consigliato)")
-    p.add_argument("--early_stop_patience",  type=int,   default=20)
-    p.add_argument("--early_stop_min_delta", type=float, default=1e-5)
+    p.add_argument("--early_stop_patience",  type=int,   default=75)
+    p.add_argument("--early_stop_min_delta", type=float, default=1e-4)
     p.add_argument("--loss_target",          type=float, default=0.0)
     p.add_argument("--resume", action="store_true",
                help="Riprendi dal checkpoint migliore esistente in model_dir/checkpoints/")
@@ -537,7 +537,7 @@ def main() -> int:
             weight_decay=args.weight_decay,
             loss_name=args.loss,
             huber_delta=args.huber_delta,
-            first_decay_steps=train_steps * 5,
+            first_decay_steps=train_steps * 20,
         )
 
     model.summary()
