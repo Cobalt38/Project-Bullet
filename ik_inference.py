@@ -121,26 +121,38 @@ CUSTOM_OBJECTS = {
 # Caricamento modello
 # ---------------------------------------------------------------------------
 
-def load_model_and_metadata(model_dir: str):
+def load_model_and_metadata(model_dir: str, model_path: str = None):
     model_dir = Path(model_dir)
 
-    # Prova prima il checkpoint migliore, poi il modello finale
-    ckpt = model_dir / "checkpoints" / "best_model.keras"
-    final = model_dir / "model.keras"
-
-    if ckpt.exists():
-        model_path = ckpt
-    elif final.exists():
-        model_path = final
+    # Se model_path è passato esplicitamente, usalo direttamente
+    if model_path:
+        model_path = Path(model_path)
     else:
-        raise FileNotFoundError(
-            f"Nessun modello trovato in {model_dir}.\n"
-            f"Cercati:\n  {ckpt}\n  {final}"
-        )
+        ckpt  = model_dir / "checkpoints" / "best_model.keras"
+        final = model_dir / "model.keras"
+        if ckpt.exists():
+            model_path = ckpt
+        elif final.exists():
+            model_path = final
+        else:
+            raise FileNotFoundError(
+                f"Nessun modello trovato in {model_dir}.\n"
+                f"Cercati:\n  {ckpt}\n  {final}"
+            )
+
+    if not model_path.exists():
+        raise FileNotFoundError(f"Modello non trovato: {model_path}")
 
     print(f"Caricamento modello da: {model_path}")
-    model = tf.keras.models.load_model(str(model_path), custom_objects=CUSTOM_OBJECTS)
-    print("Modello caricato.")
+
+    if model_path.suffix == ".tflite":
+        interp = tf.lite.Interpreter(model_path=str(model_path))
+        interp.allocate_tensors()
+        model = interp  # ritorna l'interpreter direttamente
+        print("Modello TFLite caricato.")
+    else:
+        model = tf.keras.models.load_model(str(model_path), custom_objects=CUSTOM_OBJECTS)
+        print("Modello Keras caricato.")
 
     metadata_path = model_dir / "metadata.json"
     metadata = {}
@@ -149,7 +161,7 @@ def load_model_and_metadata(model_dir: str):
             metadata = json.load(f)
         print(f"Metadata caricati: {len(metadata.get('output_columns', []))} output cols")
     else:
-        print("ATTENZIONE: metadata.json non trovato. I nomi dei giunti non saranno disponibili.")
+        print("ATTENZIONE: metadata.json non trovato.")
 
     return model, metadata
 
@@ -164,8 +176,14 @@ def build_input(x: float, y: float, z: float,
 
 
 def run_inference(model, input_array: np.ndarray) -> np.ndarray:
-    """Ritorna il vettore sin/cos raw del modello."""
-    return model(input_array, training=False).numpy()[0]
+    if isinstance(model, tf.lite.Interpreter):
+        inp_idx = model.get_input_details()[0]["index"]
+        out_idx = model.get_output_details()[0]["index"]
+        model.set_tensor(inp_idx, input_array)
+        model.invoke()
+        return model.get_tensor(out_idx)[0]
+    else:
+        return model(input_array, training=False).numpy()[0]
 
 
 def decode_output(raw: np.ndarray, output_cols: List[str]) -> Dict:
@@ -351,6 +369,9 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
+    p.add_argument("--model_path", default=None,
+               help="Percorso diretto al modello (.keras o .tflite). "
+                    "Se omesso, cerca in --model_dir.")
     p.add_argument(
         "--model_dir", default="ik_model",
         help="Directory del modello (default: ik_model)",
@@ -372,7 +393,7 @@ def parse_args() -> argparse.Namespace:
 def main():
     args = parse_args()
 
-    model, metadata = load_model_and_metadata(args.model_dir)
+    model, metadata = load_model_and_metadata(args.model_dir, args.model_path)
 
     mode = args.mode if args.mode else ask_mode()
 

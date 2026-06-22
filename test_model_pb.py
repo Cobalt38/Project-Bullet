@@ -63,9 +63,9 @@ last_vals = None
 # Inferenza
 # ---------------------------------------------------------------------------
 
-def load_model():
+def load_model(model_path, model_dir):
     global _model, _meta
-    _model, _meta = load_model_and_metadata("ik_model")
+    _model, _meta = load_model_and_metadata(model_path=model_path, model_dir=model_dir)
     print(f"[MODEL] Caricato. Output joints: {_meta.get('output_columns', [])}")
 
 def inference(x, y, z, qx, qy, qz, qw):
@@ -169,7 +169,7 @@ def updateTargetDebug(target_pos, target_ori):
 # Setup
 # ---------------------------------------------------------------------------
 
-def setup():
+def setup(model_path, model_dir):
     print("Setting up simulation...")
     global handles, last_vals, _target, _robot
 
@@ -200,8 +200,7 @@ def setup():
 
     createTargetDebug()
 
-    # BUG FIX: carica il modello qui, una volta sola, prima del loop
-    load_model()
+    load_model(model_path, model_dir)
 
 # ---------------------------------------------------------------------------
 # IK test + visuals
@@ -231,13 +230,31 @@ def update_visuals(joints, pos, ori):
     updateTargetDebug(pos, ori)
     p.stepSimulation()
 
+import argparse
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description="IK Inference with pybullet interface – OpenArm Right",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    p.add_argument(
+        "--model_path", required=True,
+        help="Path al modello",
+    )
+    p.add_argument(
+        "--model_dir", default="ik_model",
+        help="Directory opzionale del modello (default: ik_model)",
+    )
+    return p.parse_args()
+
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     try:
-        setup()
+        args = parse_args()
+        setup(args.model_path, args.model_dir)
         diagnose_robot()
 
         slider_keys = [k for k in PARAM_KEYS if k != "predict_btn"]
