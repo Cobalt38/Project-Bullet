@@ -102,6 +102,22 @@ def convert_float16(model: tf.keras.Model, out_path: str):
     print(f"[FLOAT16] Salvato: {out_path}  ({size_mb:.2f} MB)")
 
 # ---------------------------------------------------------------------------
+# Float32
+# ---------------------------------------------------------------------------
+
+def convert_float32(model: tf.keras.Model, out_path: str):
+    print("\n[FLOAT32] Conversione in corso...")
+    converter = tf.lite.TFLiteConverter.from_keras_model(model)
+    converter.optimizations          = []
+    # converter.target_spec.supported_types = [tf.float32]
+    tflite_model = converter.convert()
+
+    with open(out_path, "wb") as f:
+        f.write(tflite_model)
+    size_mb = os.path.getsize(out_path) / 1024 / 1024
+    print(f"[FLOAT32] Salvato: {out_path}  ({size_mb:.2f} MB)")
+
+# ---------------------------------------------------------------------------
 # INT8 PTQ
 # ---------------------------------------------------------------------------
 
@@ -338,7 +354,7 @@ class TFLitePredictor:
 def parse_args():
     p = argparse.ArgumentParser(description="Quantizzazione modello IK")
     p.add_argument("--model_dir",      default="ik_model")
-    p.add_argument("--mode",           choices=["float16", "int8", "qat"], default="float16")
+    p.add_argument("--mode",           choices=["float16", "int8", "qat", "float32"], default="float16")
     p.add_argument("--parquet_file",   default=None,
                    help="Richiesto per int8 e qat (dataset di calibrazione/fine-tuning)")
     p.add_argument("--n_calib",        type=int, default=1024,
@@ -379,6 +395,14 @@ def main():
     elif args.mode == "int8":
         out_path = os.path.join(out_dir, "model_int8.tflite")
         convert_int8(model, args.parquet_file, out_path, args.n_calib)
+        if args.benchmark:
+            benchmark(model, out_path)
+        if args.eval_accuracy:
+            evaluate_accuracy(model, out_path, args.parquet_file, args.n_eval)
+    
+    elif args.mode == "float32":
+        out_path = os.path.join(out_dir, "model_float32.tflite")
+        convert_float32(model, args.parquet_file, out_path, args.n_calib)
         if args.benchmark:
             benchmark(model, out_path)
         if args.eval_accuracy:
