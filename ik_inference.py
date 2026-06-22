@@ -39,7 +39,10 @@ import tensorflow as tf
 
 class MinMaxNormalization(tf.keras.layers.Layer):
     def __init__(self, scale, **kwargs):
-        super().__init__(trainable=False, **kwargs)
+        # NON hardcodare trainable=False: Keras lo inietta già da **kwargs
+        # durante la deserializzazione, causando "multiple values" error.
+        kwargs.setdefault("trainable", False)
+        super().__init__(**kwargs)
         self._scale = np.array(scale, dtype=np.float32)
 
     def build(self, input_shape):
@@ -56,6 +59,7 @@ class MinMaxNormalization(tf.keras.layers.Layer):
 
     @classmethod
     def from_config(cls, config):
+        config = dict(config)  # copia per non mutare l'originale
         config["scale"] = np.array(config["scale"], dtype=np.float32)
         return cls(**config)
 

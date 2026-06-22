@@ -59,7 +59,8 @@ def detect_output_cols(parquet_path: str) -> List[str]:
 
 class MinMaxNormalization(tf.keras.layers.Layer):
     def __init__(self, scale: np.ndarray, **kwargs):
-        super().__init__(trainable=False, **kwargs)
+        kwargs.setdefault("trainable", False)
+        super().__init__(**kwargs)
         self._scale = scale.astype(np.float32)
 
     def build(self, input_shape):

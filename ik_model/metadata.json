@@ -1,0 +1,55 @@
+{
+  "input_columns": [
+    "target_x",
+    "target_y",
+    "target_z",
+    "hand_quat_qx",
+    "hand_quat_qy",
+    "hand_quat_qz",
+    "hand_quat_qw"
+  ],
+  "output_columns": [
+    "joint_0_sin",
+    "joint_0_cos",
+    "joint_1_sin",
+    "joint_1_cos",
+    "joint_2_sin",
+    "joint_2_cos",
+    "joint_3_sin",
+    "joint_3_cos",
+    "joint_4_sin",
+    "joint_4_cos",
+    "joint_5_sin",
+    "joint_5_cos",
+    "joint_6_sin",
+    "joint_6_cos"
+  ],
+  "input_scale": [
+    2.0,
+    2.0,
+    2.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ],
+  "hidden": [
+    1024,
+    512,
+    512,
+    256
+  ],
+  "dropout": 0.25,
+  "loss": "huber",
+  "huber_delta": 1.0,
+  "lr_initial": 0.001,
+  "batch_size": 4096,
+  "weight_decay": 0.0001,
+  "epochs_trained": 135,
+  "virtual_split": {
+    "train_groups": 2227,
+    "val_groups": 278,
+    "test_groups": 278,
+    "split_seed": 42
+  }
+}
