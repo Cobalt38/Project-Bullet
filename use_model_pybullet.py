@@ -80,6 +80,23 @@ def inference(x, y, z, qx, qy, qz, qw):
 # Utils
 # ---------------------------------------------------------------------------
 
+def left_to_right_mirroring(pos_left, quat_left):
+    """
+    Converte input del braccio sinistro in input equivalenti per il modello
+    addestrato sul braccio destro. Piano di simmetria: XZ (Y invertita).
+
+    Args:
+        pos_left:  array [x, y, z]   - target per il braccio sinistro
+        quat_left: array [x, y, z, w] - orientamento target per il braccio sinistro
+
+    Returns:
+        pos_right, quat_right  - input da passare al modello
+    """
+    pos_right = pos_left * np.array([1.0, -1.0, 1.0])
+    quat_right = quat_left * np.array([1.0, -1.0, 1.0, 1.0])  # nega qy (xyzw)
+
+    return pos_right, quat_right
+
 def diagnose_robot():
     """Stampa tutti i joint del robot per trovare gli indici corretti."""
     print(f"\n=== JOINT MAP ({p.getNumJoints(_robot)} joints totali) ===")
