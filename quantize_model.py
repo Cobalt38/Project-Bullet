@@ -55,35 +55,28 @@ CUSTOM_OBJECTS = {
 # Dataset di calibrazione per INT8 (legge N campioni casuali dal Parquet)
 # ---------------------------------------------------------------------------
 
-def build_calibration_dataset(parquet_path: str, n_samples: int = 1024) -> tf.data.Dataset:
-    """
-    Legge n_samples righe casuali dal Parquet e le restituisce come
-    tf.data.Dataset di batch singoli (shape [1, 7]) per il calibrator TFLite.
-    """
-    pf       = pq.ParquetFile(parquet_path)
-    n_groups = pf.metadata.num_row_groups
-    rng      = np.random.default_rng(42)
+def build_calibration_dataset(parquet_path: str, n_samples: int = 1024):
+    pf        = pq.ParquetFile(parquet_path)
+    n_groups  = pf.metadata.num_row_groups
+    rng       = np.random.default_rng(42)
 
-    # Leggi un batch da un row group casuale
     group_idx = int(rng.integers(0, n_groups))
     table     = pf.read_row_group(group_idx, columns=INPUT_COLS)
     data      = table.to_pandas().values.astype(np.float32)
 
-    # Subsample
     if len(data) > n_samples:
         idx  = rng.choice(len(data), n_samples, replace=False)
         data = data[idx]
 
     print(f"[CALIB] {len(data)} campioni da row group {group_idx}")
 
-    def _gen():
+    # TFLite representative_dataset vuole un callable che yielda
+    # una lista di array — uno per ogni input tensor del modello
+    def representative_dataset():
         for row in data:
-            yield [row.reshape(1, -1)]   # shape [1, 7]
+            yield [row.reshape(1, -1)]  # lista con un elemento: shape [1, 7]
 
-    return tf.data.Dataset.from_generator(
-        _gen,
-        output_signature=[tf.TensorSpec(shape=(1, len(INPUT_COLS)), dtype=tf.float32)],
-    )
+    return representative_dataset
 
 # ---------------------------------------------------------------------------
 # Float16
