@@ -402,7 +402,7 @@ def main():
     
     elif args.mode == "float32":
         out_path = os.path.join(out_dir, "model_float32.tflite")
-        convert_float32(model, args.parquet_file, out_path, args.n_calib)
+        convert_float32(model, out_path)
         if args.benchmark:
             benchmark(model, out_path)
         if args.eval_accuracy:
