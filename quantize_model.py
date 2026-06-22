@@ -37,11 +37,12 @@ import tensorflow as tf
 # ---------------------------------------------------------------------------
 # Import custom objects dallo stesso ik_inference.py
 # ---------------------------------------------------------------------------
-from ik_inference import (
+from train_tf_parquet import (
     MinMaxNormalization, QuatTo6D, GaussianNoise,
-    ik_loss, load_model_and_metadata,
-    INPUT_COLS, INPUT_SCALE,
+    ik_loss, INPUT_COLS, INPUT_SCALE
 )
+
+from ik_inference import load_model_and_metadata
 
 CUSTOM_OBJECTS = {
     "MinMaxNormalization": MinMaxNormalization,
