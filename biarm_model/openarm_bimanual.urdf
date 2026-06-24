@@ -12,6 +12,7 @@
     <child link="openarm_body_link0"/>
     <origin rpy="0 0 0" xyz="0 0 0"/>
   </joint>
+
   <link name="openarm_body_link0">
     <visual name="openarm_body_link0_visual">
       <origin rpy="0.0 0.0 0.0" xyz="0.0 0.0 0.0"/>
@@ -32,6 +33,7 @@
       <inertia ixx="1.653" ixy="0.0" ixz="0.0" iyy="1.653" iyz="0.0" izz="0.051"/>
     </inertial>
   </link>
+  
   <joint name="openarm_left_openarm_body_link0_joint" type="fixed">
     <parent link="openarm_body_link0"/>
     <child link="openarm_left_link0"/>

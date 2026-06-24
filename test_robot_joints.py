@@ -5,7 +5,7 @@ import os
 import math
 import numpy as np
 
-URDF_PATH    = "biarm_model/openarm_right.urdf"
+URDF_PATH    = "biarm_model/openarm_left.urdf"
 ARM_JOINTS    = [i for i in range(2, 9)]   # openarm_joint2 … openarm_joint8
 EE_LINK_INDEX = 10
 # ARM_JOINTS            = [12, 13, 14, 15, 16, 17, 18] 
@@ -36,8 +36,6 @@ def calculate_distance():
     print(f"Distance from EE to first joint: {dist:.3f} m")
     palla1 = p.addUserDebugPoints(pointPositions=[ee_pos], pointColorsRGB=[[1, 0, 0]], pointSize=50, lifeTime=1)
     palla2 = p.addUserDebugPoints(pointPositions=[first_joint_pos], pointColorsRGB=[[0, 1, 0]], pointSize=50, lifeTime=1)
-
-
 
 def diagnose_robot():
     """Stampa tutti i joint del robot per trovare gli indici corretti."""

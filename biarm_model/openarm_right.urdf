@@ -35,7 +35,7 @@
   <joint name="openarm_right_openarm_body_link0_joint" type="fixed">
     <parent link="openarm_body_link0"/>
     <child link="openarm_right_link0"/>
-    <origin rpy="1.5708 0 0" xyz="0.0 -0.031 0.698"/>
+    <origin rpy="1.5708 0 0" xyz="0.0 -0.031 0.698"/> <!-- MARIO -->
   </joint>
   <link name="openarm_right_link0">
     <visual name="openarm_right_link0_visual">
