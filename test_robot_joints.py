@@ -5,7 +5,7 @@ import os
 import math
 import numpy as np
 
-URDF_PATH    = "biarm_model/openarm_left.urdf"
+URDF_PATH    = "biarm_model/openarm_right.urdf"
 ARM_JOINTS    = [i for i in range(2, 9)]   # openarm_joint2 … openarm_joint8
 EE_LINK_INDEX = 10
 # ARM_JOINTS            = [12, 13, 14, 15, 16, 17, 18] 
