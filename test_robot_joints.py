@@ -4,6 +4,7 @@ import pandas as pd
 import os
 import math
 import numpy as np
+from scipy.spatial.transform import Rotation as R
 
 URDF_PATH    = "biarm_model/openarm_right.urdf"
 ARM_JOINTS    = [i for i in range(2, 9)]   # openarm_joint2 … openarm_joint8
@@ -36,9 +37,16 @@ def calculate_distance():
 
 def get_ee_pose(robot_id, ee_link_index):
     state = p.getLinkState(robot_id, ee_link_index, computeForwardKinematics=True)
+    print(f"[CIAO]: {state[0] + state[1]}")
     pos  = state[4]   # (x, y, z)
     quat = state[5]   # (x, y, z, w)
     euler = p.getEulerFromQuaternion(quat)   # (roll, pitch, yaw) in radianti
+    quat2 = p.getQuaternionFromEuler(euler)
+    print(f"PYB quat1: {quat}\nPYB quat2: {quat2}")
+    # eulerScipy = R.from_quat(quat).as_euler("XYZ")
+    # print(f"EULERI SCIPY: {eulerScipy}\nEULERI PYBULLET: {euler}")
+    quatScipy = R.from_euler("xyz", euler).as_quat() #uguale a p.getQuaternionFromEuler(euler)
+    print(f"\nQUAT SCIPY: {quatScipy}\nQUAT PYBULLET: {quat}")
     print(f"[EE POS]   x={pos[0]:.4f}  y={pos[1]:.4f}  z={pos[2]:.4f}")
     print(f"[EE QUAT]  x={quat[0]:.4f}  y={quat[1]:.4f}  z={quat[2]:.4f}  w={quat[3]:.4f}")
     print(f"[EE EULER DEG] r={math.degrees(euler[0]):.2f}°  p={math.degrees(euler[1]):.2f}°  y={math.degrees(euler[2]):.2f}°")
