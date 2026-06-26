@@ -8,13 +8,8 @@ import numpy as np
 URDF_PATH    = "biarm_model/openarm_right.urdf"
 ARM_JOINTS    = [i for i in range(2, 9)]   # openarm_joint2 … openarm_joint8
 EE_LINK_INDEX = 10
-# ARM_JOINTS            = [12, 13, 14, 15, 16, 17, 18] 
-# EE_LINK_INDEX         = 18 
 ROBOPOS      = [0, 0, 0]
-MAPSIZE      = [0.8, 0.8, 0.6]
-MAPOFFSET    = [0, 0, 0.3]
-RIGHT_BASE_TRANSLATION = np.array([0.0, -0.031, 0.698])  # xyz del giunto di montaggio
-RIGHT_BASE_RPY         = [1.5708, 0.0, 0.0]              # rpy del giunto di montaggio
+DEFAULT_JOINTS = [32.0, 30.0, 0.0, 60.0, 20.0, -16.0, 52.0]
 
 _robot = None
 
@@ -23,6 +18,8 @@ _joint1 = _joint2 = _joint3 = _joint4 = _joint5 = _joint6 = _joint7 = None
 palla1 = palla2 = palla3 = None
 
 calc_dist = None
+get_pose = None
+apply_default = None
 
 lower_limits = []
 upper_limits = []
@@ -37,6 +34,17 @@ def calculate_distance():
     palla1 = p.addUserDebugPoints(pointPositions=[ee_pos], pointColorsRGB=[[1, 0, 0]], pointSize=50, lifeTime=1)
     palla2 = p.addUserDebugPoints(pointPositions=[first_joint_pos], pointColorsRGB=[[0, 1, 0]], pointSize=50, lifeTime=1)
 
+def get_ee_pose(robot_id, ee_link_index):
+    state = p.getLinkState(robot_id, ee_link_index, computeForwardKinematics=True)
+    pos  = state[4]   # (x, y, z)
+    quat = state[5]   # (x, y, z, w)
+    euler = p.getEulerFromQuaternion(quat)   # (roll, pitch, yaw) in radianti
+    print(f"[EE POS]   x={pos[0]:.4f}  y={pos[1]:.4f}  z={pos[2]:.4f}")
+    print(f"[EE QUAT]  x={quat[0]:.4f}  y={quat[1]:.4f}  z={quat[2]:.4f}  w={quat[3]:.4f}")
+    print(f"[EE EULER DEG] r={math.degrees(euler[0]):.2f}°  p={math.degrees(euler[1]):.2f}°  y={math.degrees(euler[2]):.2f}°")
+    print(f"[EE EULER RAD] r={euler[0]:.2f}-r  p={euler[1]:.2f}-r  y={euler[2]:.2f}-r")
+    return pos, quat, euler
+
 def diagnose_robot():
     """Stampa tutti i joint del robot per trovare gli indici corretti."""
     print(f"\n=== JOINT MAP ({p.getNumJoints(_robot)} joints totali) ===")
@@ -48,7 +56,7 @@ def diagnose_robot():
 
 def setup():
     print("Setting up simulation...")
-    global _robot, _joint1, _joint2, _joint3, _joint4, _joint5, _joint6, _joint7, lower_limits, upper_limits, joint_ranges, calc_dist
+    global _robot, _joint1, _joint2, _joint3, _joint4, _joint5, _joint6, _joint7, lower_limits, upper_limits, joint_ranges, calc_dist, get_pose, apply_default, palla1, palla2, palla3
     p.connect(p.GUI)
     p.resetSimulation()
     p.setAdditionalSearchPath(pybullet_data.getDataPath())
@@ -69,6 +77,8 @@ def setup():
         upper_limits.append(info[9])
         joint_ranges.append(info[9] - info[8])
     calc_dist = p.addUserDebugParameter("Calculate distance", 1, 0, 0)
+    get_pose = p.addUserDebugParameter("Get pose", 1, 0, 0)
+    apply_default = p.addUserDebugParameter("Default", 1, 0, 0)
     _joint1 = p.addUserDebugParameter(f"Joint 1", math.degrees(lower_limits[0]), math.degrees(upper_limits[0]), 0)
     _joint2 = p.addUserDebugParameter(f"Joint 2", math.degrees(lower_limits[1]), math.degrees(upper_limits[1]), 90)
     _joint3 = p.addUserDebugParameter(f"Joint 3", math.degrees(lower_limits[2]), math.degrees(upper_limits[2]), 0)
@@ -87,8 +97,12 @@ if __name__ == "__main__":
         diagnose_robot()
         print(p.getLinkState(_robot, EE_LINK_INDEX)[5])
         last_calc = p.readUserDebugParameter(calc_dist)
+        last_pose = p.readUserDebugParameter(get_pose)
+        last_apply = p.readUserDebugParameter(apply_default)
         while True:
             new_calc = p.readUserDebugParameter(calc_dist)
+            new_pose = p.readUserDebugParameter(get_pose)
+            new_apply = p.readUserDebugParameter(apply_default)
             if new_calc != last_calc:
                 last_calc = new_calc
                 calculate_distance()
@@ -101,6 +115,12 @@ if __name__ == "__main__":
                 p.readUserDebugParameter(_joint6),
                 p.readUserDebugParameter(_joint7)
             ]
+            if new_apply != last_apply:
+                targetJoints=DEFAULT_JOINTS
+            if new_pose != last_pose:
+                last_pose = new_pose
+                print(f"[CURRENT JOINTS]: {targetJoints}")
+                get_ee_pose(_robot, EE_LINK_INDEX)
             for joint_idx, val in zip(ARM_JOINTS, targetJoints):
                 p.resetJointState(_robot, joint_idx, math.radians(float(val)))
             p.stepSimulation()

@@ -25,6 +25,9 @@ import pybullet_data
 
 from ik_inference import load_model_and_metadata, run_inference, decode_output, build_input
 
+TEST_POS = [0.3947, -0.3578, 0.7095]
+TEST_EULER = [0.07, -0.55,  2.56]
+
 # ---------------------------------------------------------------------------
 # Configurazione bracci
 # ---------------------------------------------------------------------------
@@ -155,6 +158,7 @@ class ArmProcess:
         ms  = cfg["mapsize"]
         defs = [
             ("⚡ Predict", 1, 0, 1),
+            ("- Apply default pose", 1, 0, 1),
             ("Euler X",   -math.pi, math.pi, 0),
             ("Euler Y",   -math.pi, math.pi, 0),
             ("Euler Z",   -math.pi, math.pi, 0),
@@ -162,7 +166,7 @@ class ArmProcess:
             ("Position Y", -ms[1]/2 + mo[1], ms[1]/2 + mo[1], mo[1]),
             ("Position Z", -ms[2]/2 + mo[2], ms[2]/2 + mo[2], mo[2]),
         ]
-        keys = ["predict_btn", "eulerX", "eulerY", "eulerZ", "posX", "posY", "posZ"]
+        keys = ["predict_btn", "apply_default", "eulerX", "eulerY", "eulerZ", "posX", "posY", "posZ"]
         self._handles = {
             k: p.addUserDebugParameter(label, lo, hi, default)
             for k, (label, lo, hi, default) in zip(keys, defs)
@@ -316,6 +320,16 @@ class ArmProcess:
             print(f"  [{i:2d}] {jtype:<10} name={info[1].decode():<40} parent={info[12].decode()}")
         print("===\n")
 
+    def _get_ee_state(self):
+        state = p.getLinkState(self._robot, 10, computeForwardKinematics=True)
+        pos  = state[4]   # (x, y, z)
+        quat = state[5]   # (x, y, z, w)
+        euler = p.getEulerFromQuaternion(quat)   # (roll, pitch, yaw) in radianti
+        print(f"[EE POS]   x={pos[0]:.4f}  y={pos[1]:.4f}  z={pos[2]:.4f}")
+        print(f"[EE QUAT]  x={quat[0]:.4f}  y={quat[1]:.4f}  z={quat[2]:.4f}  w={quat[3]:.4f}")
+        print(f"[EE EULER DEG] r={math.degrees(euler[0]):.2f}°  p={math.degrees(euler[1]):.2f}°  y={math.degrees(euler[2]):.2f}°")
+        print(f"[EE EULER RAD] r={euler[0]:.2f}-r  p={euler[1]:.2f}-r  y={euler[2]:.2f}-r")
+
     # ---- entry point (lanciato in processo separato) --------------------
 
     def run(self):
@@ -353,6 +367,7 @@ class ArmProcess:
                 curr = self._read_params()
 
                 predict_triggered = (self._last_vals["predict_btn"] != curr["predict_btn"])
+                applydefault_triggered = (self._last_vals["apply_default"] != curr["apply_default"])
                 sliders_changed   = any(curr[k] != self._last_vals[k] for k in slider_keys)
 
                 if sliders_changed:
@@ -366,6 +381,11 @@ class ArmProcess:
                     euler = [curr["eulerX"],  curr["eulerY"], curr["eulerZ"]]
                     quat  = p.getQuaternionFromEuler(euler)
                     self._run_ik(pos, quat)
+
+                if applydefault_triggered:
+                    self._run_ik(TEST_POS, p.getQuaternionFromEuler(TEST_EULER))
+                    p.stepSimulation()
+                    self._get_ee_state()
 
                 self._last_vals = curr
                 p.stepSimulation()
